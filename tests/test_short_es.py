@@ -395,3 +395,14 @@ def test_plantilla_franquicia_cabe_en_el_rango():
     assert short_es.contar_palabras(g.texto) <= short_es.PALABRAS_OBJETIVO[1]
     assert short_es._menciona_transparencia(g.texto) and "enlace de mi perfil" in g.frases[-1].texto
     assert short_es.titulo_final(g) == "Ganar dinero con IA 2026: la Franquicia IA, sin humo #Shorts"
+
+
+def test_groq_es_respaldo_de_gemini(monkeypatch):
+    from purffle_shorts.config import Settings
+    from purffle_shorts.llm import LLM
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GROQ_API_KEY", "q")
+    monkeypatch.setenv("LLM_FALLBACKS", "groq")
+    assert [str(p).split(":")[0] for p in LLM(Settings.from_env()).providers] == ["gemini", "groq"]
+    monkeypatch.delenv("GROQ_API_KEY")               # sin la clave de Groq, Gemini sigue funcionando solo
+    assert [str(p).split(":")[0] for p in LLM(Settings.from_env()).providers] == ["gemini"]

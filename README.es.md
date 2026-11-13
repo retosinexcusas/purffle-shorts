@@ -121,7 +121,7 @@ El resultado queda en `salida/<tema>/`: `short.mp4`, `titulo.txt`, `descripcion.
 
 **En GitHub Actions:**
 
-1. En tu repositorio, ve a *Settings → Secrets and variables → Actions* y crea el secreto `PIXABAY_API_KEY` (opcionales: `GEMINI_API_KEY` o `GROQ_API_KEY` para guiones escritos por IA).
+1. En tu repositorio, ve a *Settings → Secrets and variables → Actions* y crea el secreto `PIXABAY_API_KEY`. Para guiones escritos por IA, crea también `GEMINI_API_KEY` y `GROQ_API_KEY` (ambas gratis): si Gemini está saturado, el workflow usa Groq antes de recurrir a la plantilla.
 2. Ve a *Actions → Generar Short en español → Run workflow*, escribe el **tema** y pulsa *Run workflow*.
 3. Al terminar, descarga el video desde la sección **Artifacts** de la ejecución (`short-<número>`). El resumen de la ejecución muestra el título, la descripción y el guion listos para copiar.
 

@@ -44,6 +44,8 @@ jobs:
       # Opcionales (niveles gratuitos): si existen, un LLM escribe el guion; si no, se usa Wikipedia en español.
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      # Si Gemini falla (p. ej. 503 por saturación), se prueba Groq (gratis) antes de usar la plantilla.
+      LLM_FALLBACKS: groq
       # Opcional: variable del repositorio para cambiar de modelo si el proveedor retira el de por defecto.
       LLM_MODEL: ${{ vars.LLM_MODEL }}
       PYTHONUNBUFFERED: "1"
@@ -70,6 +72,14 @@ jobs:
         run: |
           if [ -z "$PIXABAY_API_KEY" ]; then
             echo "::warning::No existe el secreto PIXABAY_API_KEY: el video tendrá un fondo de color liso. Créalo en Settings → Secrets and variables → Actions."
+          fi
+
+      - name: Comprobar las claves de IA
+        run: |
+          if [ -z "$GEMINI_API_KEY" ] && [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning::No hay GEMINI_API_KEY ni GROQ_API_KEY: el guion saldrá de la plantilla del canal."
+          elif [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning::No existe el secreto GROQ_API_KEY: si Gemini está saturado no habrá respaldo. Créalo gratis en console.groq.com."
           fi
 
       - name: Generar el Short
