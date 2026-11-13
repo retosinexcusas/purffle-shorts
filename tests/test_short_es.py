@@ -195,7 +195,7 @@ def test_consultas_llevan_el_tema_en_ingles(monkeypatch):
     monkeypatch.setattr(short_es, "guion_con_wikipedia", lambda tema: g)
     out = short_es.generar_guion("los pulpos", usar_llm=False, usar_wikipedia=True)
     # el cierre sin enlace se completa con el CTA del canal (última toma: el tema)
-    assert [f.busqueda_en for f in out.frases] == ["octopus", "octopus heart", "octopus arm", "octopus", "octopus"]
+    assert [f.busqueda_en for f in out.frases] == ["octopus", "octopus heart", "octopus arm", "octopus", "person smiling smartphone"]
 
 
 def test_descargas_fallidas_reutilizan_clips(tmp_path, monkeypatch):
@@ -313,7 +313,7 @@ def test_prompt_incluye_cliente_ideal_y_reglas():
 def test_prompt_franquicia_exige_transparencia():
     prompt = short_es._prompt_llm("qué es la Franquicia IA y si vale la pena")
     for texto in ("97 dólares", "50 %", "48,50 dólares", "sin ventas no hay ingresos",
-                  "tú (el creador) ganas una comisión"):
+                  "tú, el creador, ganas una comisión"):
         assert texto in prompt
 
 
@@ -342,7 +342,8 @@ def test_franquicia_sin_transparencia_se_completa_y_no_se_recorta():
     g = short_es.ajustar_a_reglas(g)
     assert short_es._menciona_transparencia(g.texto)
     assert g.frases[-2].texto == short_es.FRASE_TRANSPARENCIA_FRANQUICIA
-    assert g.frases[-2].fija and g.frases[0].fija and g.frases[-1].fija and not g.frases[1].fija
+    assert g.frases[-2].fija and g.frases[0].fija and g.frases[-1].fija
+    assert short_es.contar_palabras(g.texto) <= short_es.PALABRAS_OBJETIVO[1]   # el relleno largo se recortó
 
 
 def test_cierre_sin_enlace_recibe_el_cta():
@@ -445,3 +446,31 @@ def test_configurar_modelo_groq_consulta_la_cuenta(monkeypatch):
     import os
     assert os.environ["GROQ_MODEL"] == "openai/gpt-oss-120b"
     monkeypatch.delenv("GROQ_MODEL")
+
+
+def test_guion_real_de_groq_sin_duplicados():
+    """Lo que escribió Groq en la ejecución 8: transparencia incompleta, CTA en medio y una frase después."""
+    frases = [
+        "Si tienes 1 hora al día y solo tu celular, prueba la franquicia IA.",
+        "Los tutoriales están desordenados y temes perder dinero, pero la franquicia IA solo cuesta 97 dólares.",
+        "Te enseña embudos, pauta y automatización con IA, y cada venta genera el 50 %, unos 48,50 dólares, con tu "
+        "propio enlace.",
+        "Sin ventas no hay ingresos, así que el primer paso es crear tu enlace de afiliado y compartirlo en tus redes.",
+        "Usa la herramienta gratuita de generación de links que la plataforma ofrece y prueba un embudo sencillo hoy.",
+        "Si quieres el mapa paso a paso con IA, sin humo ni promesas falsas, revisa el enlace de mi perfil.",
+        "Empieza ahora y ve los resultados poco a poco.",
+    ]
+    datos = {"frase_clave": "ganar dinero con IA",
+             "titulo": "ganar dinero con IA 2026: descubre la franquicia IA sin invertir",
+             "descripcion": "x", "hashtags": [], "frases": [{"texto": t, "busqueda_en": "x"} for t in frases]}
+    tema = "la Franquicia IA: qué es, cuánto cuesta y para quién no es"
+    g = short_es.ajustar_a_reglas(short_es._guion_desde_json(tema, datos))
+    textos = [f.texto for f in g.frases]
+    assert textos[-1] == frases[5]                                    # un solo CTA, al final
+    assert "Empieza ahora" not in " ".join(textos)
+    assert sum("97" in t for t in textos) == 1                        # el precio no se repite
+    assert textos.count(short_es.FRASE_TRANSPARENCIA_FRANQUICIA) == 1
+    assert short_es.contar_palabras(g.texto) <= short_es.PALABRAS_OBJETIVO[1]
+    assert g.titulo.startswith("Ganar dinero con IA") and "sin invertir" not in g.titulo
+    # Al quitar las frases parciales queda más corto (~99 palabras, ~38 s): solo falta la duración ideal.
+    assert [p for p in short_es.problemas_del_guion(g) if "palabras" not in p] == []

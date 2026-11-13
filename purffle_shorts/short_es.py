@@ -268,10 +268,13 @@ _PALABRAS_CLAVE_PROMPT = 10       # cuántas búsquedas reales se le ofrecen al 
 def _bloque_franquicia(tema: str) -> str:
     if not FRANQUICIA_RE.search(tema):
         return ""
-    return """
-OBLIGATORIO porque el tema es la Franquicia IA. En una o dos frases del desarrollo di, con estas cifras exactas:
-cuesta 97 dólares; enseña embudos, pauta y automatización con IA; se gana el 50 %, unos 48,50 dólares, por cada \
-venta con el propio enlace; sin ventas no hay ingresos; y tú (el creador) ganas una comisión si entran con tu enlace.
+    return f"""
+OBLIGATORIO porque el tema es la Franquicia IA:
+- Incluye en el desarrollo, casi literal, esta frase: "{FRASE_TRANSPARENCIA_FRANQUICIA}"
+  (cuesta 97 dólares; 50 %, unos 48,50 dólares, por venta con tu enlace; sin ventas no hay ingresos; y tú, el \
+creador, ganas una comisión si entran con tu enlace).
+- No digas "sin invertir", "gratis" ni "sin dinero" sobre la franquicia: cuesta 97 dólares.
+- Si el tema lo pide, di también para quién NO es (p. ej. quien busca dinero rápido o no puede dedicar tiempo a vender).
 """
 
 
@@ -351,6 +354,10 @@ def problemas_del_guion(guion: Guion) -> list[str]:
     if FRANQUICIA_RE.search(guion.tema) and not _menciona_transparencia(guion.texto):
         problemas.append("Falta la transparencia de la Franquicia IA: 97 dólares, 50 % de comisión (48,50 dólares) "
                          "por venta, sin ventas no hay ingresos y que tú ganas comisión con tu enlace.")
+    if FRANQUICIA_RE.search(guion.tema) and re.search(r"\b(?:sin invertir|gratis|sin dinero|sin costo)\b",
+                                                      guion.titulo, re.I):
+        problemas.append("El título no puede decir «sin invertir», «gratis» ni «sin dinero»: la Franquicia IA "
+                         "cuesta 97 dólares.")
     if guion.frase_clave and not guion.titulo.lower().startswith(guion.frase_clave.lower()):
         problemas.append(f"El título debe empezar con la frase clave «{guion.frase_clave}».")
     return problemas
@@ -427,14 +434,14 @@ def guion_con_llm(tema: str) -> Guion | None:
     guion, problemas = None, None
     for _ronda in range(2):
         data = None
-        for intento in range(3):                     # Gemini responde 503 cuando está saturado
+        for intento in range(2):                     # Gemini responde 503 cuando está saturado
             try:
                 data = llm.complete_json(SISTEMA_LLM, _prompt_llm(tema, problemas), schema=ESQUEMA_LLM,
-                                         max_tokens=3000, temperature=0.8)
+                                         max_tokens=8000, temperature=0.8)
                 break
             except LLMError as e:
-                log.warning("El LLM no respondió (intento %d/3): %s", intento + 1, str(e)[:200])
-                if intento < 2:
+                log.warning("El LLM no respondió (intento %d/2): %s", intento + 1, str(e)[:200])
+                if intento < 1:
                     time.sleep(20)
         if data is None:
             break
@@ -465,33 +472,59 @@ def elegir_frase_clave(tema: str) -> str:
     return "ingresos extra desde casa"
 
 
+_ENGANOS_FRANQUICIA = re.compile(r"\b(?:sin invertir|gratis|gratuit[oa]|sin dinero|sin costo)\b", re.I)
+
+
+def _es_cta(texto: str) -> bool:
+    t = sin_acentos(texto.lower())
+    return "enlace" in t and "perfil" in t
+
+
+def _menciona_precio_o_comision(texto: str) -> bool:
+    t = sin_acentos(texto.lower())
+    return "97" in t or "48" in t or "comision" in t or "sin ventas" in t
+
+
+def _capitalizar(texto: str) -> str:
+    return texto[:1].upper() + texto[1:]
+
+
 def ajustar_a_reglas(guion: Guion) -> Guion:
-    """Garantiza lo que no puede quedar a criterio del LLM: cierre con CTA, transparencia comercial y SEO."""
+    """Garantiza lo que no puede quedar a criterio del LLM: cierre con CTA, transparencia comercial, duración y
+    SEO. Reemplaza en lugar de añadir, para no duplicar el precio ni el llamado a la acción."""
     if not guion.frase_clave:
         guion.frase_clave = elegir_frase_clave(guion.tema)
-    cierre = sin_acentos(guion.frases[-1].texto.lower())
-    if "enlace" not in cierre and "perfil" not in cierre:
-        guion.frases.append(Frase(CTA_POR_DEFECTO))
-    if FRANQUICIA_RE.search(guion.tema):
-        if not _menciona_transparencia(guion.texto):
-            guion.frases.insert(len(guion.frases) - 1, Frase(FRASE_TRANSPARENCIA_FRANQUICIA))
-        for f in guion.frases:
-            t = sin_acentos(f.texto.lower())
-            if "97" in t or "comision" in t or "sin ventas" in t:
-                f.fija = True
-    guion.frases[0].fija = True
-    guion.frases[-1].fija = True
-    if guion.fuente == "plantilla":            # la plantilla es genérica: se recorta antes de acelerar la voz
-        while contar_palabras(guion.texto) > PALABRAS_OBJETIVO[1]:
-            prescindibles = [i for i in range(1, len(guion.frases) - 1) if not guion.frases[i].fija]
-            if not prescindibles:
-                break
-            guion.frases.pop(prescindibles[-1])
+    frases = guion.frases
+    # 1. Un solo CTA y siempre al final; lo que el modelo puso después del CTA sobra.
+    ctas = [i for i, f in enumerate(frases) if _es_cta(f.texto)]
+    if ctas:
+        cta = frases[ctas[-1]]
+        frases = [f for i, f in enumerate(frases[:ctas[-1]]) if i not in ctas] + [cta]
+    else:
+        frases.append(Frase(CTA_POR_DEFECTO, "person smiling smartphone"))
+    # 2. Transparencia de la Franquicia IA: si está incompleta, la frase fija sustituye a las parciales.
+    franquicia = bool(FRANQUICIA_RE.search(guion.tema))
+    if franquicia and not _menciona_transparencia(" ".join(f.texto for f in frases)):
+        cuerpo = [f for f in frases[1:-1] if not _menciona_precio_o_comision(f.texto)]
+        frases = [frases[0], *cuerpo, Frase(FRASE_TRANSPARENCIA_FRANQUICIA, "laptop online course"), frases[-1]]
+    if franquicia:
+        for f in frases:
+            f.fija = f.fija or _menciona_precio_o_comision(f.texto)
+    frases[0].fija = frases[-1].fija = True
+    # 3. Duración: se quitan frases del desarrollo (las últimas primero) hasta caber en el rango.
+    while contar_palabras(" ".join(f.texto for f in frases)) > PALABRAS_OBJETIVO[1]:
+        prescindibles = [i for i in range(1, len(frases) - 1) if not frases[i].fija]
+        if not prescindibles:
+            break
+        frases.pop(prescindibles[-1])
+    guion.frases = frases
+    # 4. Título: frase clave al inicio, en mayúscula, y nada de "sin invertir" sobre algo que cuesta 97 dólares.
     titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
+    if franquicia and _ENGANOS_FRANQUICIA.search(titulo):
+        titulo = f"{guion.frase_clave} 2026: la Franquicia IA sin humo, precio real"
     if guion.frase_clave.lower() not in titulo.lower():
-        clave = guion.frase_clave[:1].upper() + guion.frase_clave[1:]
-        titulo = f"{clave}: {titulo}"
-    guion.titulo = titulo
+        titulo = f"{_capitalizar(guion.frase_clave)}: {titulo}"
+    guion.titulo = _capitalizar(titulo)
     vistos = []
     for h in [*guion.hashtags, *HASHTAGS_BASE]:
         if h and h not in vistos:
