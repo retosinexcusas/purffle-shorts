@@ -87,6 +87,35 @@ python -m purffle_shorts studio                      # la app web
 
 Después copia `.env.example` a `.env`, añade una clave de IA (o ejecuta Ollama) y una clave gratuita de Pexels o Pixabay, y ejecuta `python -m purffle_shorts doctor` para comprobar la configuración. `python -m purffle_shorts make --topic "why octopuses have three hearts" --no-upload` crea un video; `python -m purffle_shorts auth` conecta tu canal de YouTube; `python -m purffle_shorts run` inicia el piloto automático.
 
+## Short en español con GitHub Actions (100 % gratis)
+
+El comando `short-es` crea un YouTube Short vertical (1080×1920, 9:16) de **menos de 60 segundos** con guion, título, descripción y subtítulos estrictamente en español, usando solo herramientas gratuitas:
+
+| Paso | Herramienta |
+|---|---|
+| Guion, título y descripción | Wikipedia en español (sin clave) o, si existe `GEMINI_API_KEY` / `GROQ_API_KEY`, su nivel gratuito |
+| Voz | edge-tts, por defecto `es-MX-JorgeNeural` |
+| Clips de fondo | API de videos de Pixabay (`PIXABAY_API_KEY`), verticales HD primero; las palabras clave se traducen al inglés internamente para buscar mejor |
+| Subtítulos | Quemados con FFmpeg (libass), sincronizados palabra por palabra con la voz |
+
+Si la locución pasa de 58,5 s, la voz se acelera (hasta +35 %) o se recortan frases del cuerpo, conservando el gancho y el cierre.
+
+**En tu equipo:**
+
+```bash
+export PIXABAY_API_KEY=tu_clave        # gratis en https://pixabay.com/api/docs/
+python -m purffle_shorts.short_es --tema "los agujeros negros"
+# o: purffle-shorts short-es "los agujeros negros" --voz es-ES-AlvaroNeural --velocidad +12%
+```
+
+El resultado queda en `salida/<tema>/`: `short.mp4`, `titulo.txt`, `descripcion.txt`, `guion.txt`, `subtitulos.srt` y `metadatos.json`.
+
+**En GitHub Actions:**
+
+1. En tu repositorio, ve a *Settings → Secrets and variables → Actions* y crea el secreto `PIXABAY_API_KEY` (opcionales: `GEMINI_API_KEY` o `GROQ_API_KEY` para guiones escritos por IA).
+2. Ve a *Actions → Generar Short en español → Run workflow*, escribe el **tema** y pulsa *Run workflow*.
+3. Al terminar, descarga el video desde la sección **Artifacts** de la ejecución (`short-<número>`). El resumen de la ejecución muestra el título, la descripción y el guion listos para copiar.
+
 ## Convierte videos largos en Shorts
 
 ```bash
