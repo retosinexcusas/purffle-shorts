@@ -93,12 +93,21 @@ El comando `short-es` crea un YouTube Short vertical (1080×1920, 9:16) de **men
 
 | Paso | Herramienta |
 |---|---|
-| Guion, título y descripción | Wikipedia en español (sin clave) o, si existe `GEMINI_API_KEY` / `GROQ_API_KEY`, su nivel gratuito |
+| Guion, título y descripción | Gemini o Groq en su nivel gratuito (`GEMINI_API_KEY` / `GROQ_API_KEY`); sin clave, una plantilla del canal |
 | Voz | edge-tts, por defecto `es-MX-JorgeNeural` |
 | Clips de fondo | API de videos de Pixabay (`PIXABAY_API_KEY`), verticales HD primero; las palabras clave se traducen al inglés internamente para buscar mejor |
 | Subtítulos | Quemados con FFmpeg (libass), sincronizados palabra por palabra con la voz |
 
-Si la locución pasa de 58,5 s, la voz se acelera (hasta +35 %) o se recortan frases del cuerpo, conservando el gancho y el cierre.
+Si la locución pasa de 58,5 s, la voz se acelera (hasta +35 %) o se recortan frases del desarrollo, conservando el gancho, la transparencia comercial y el cierre.
+
+**Cliente ideal y reglas del canal.** El guion se escribe para adultos latinoamericanos (sobre todo de Colombia) de 25 a 45 años con ingresos inestables, poco tiempo y solo su celular, que temen a los gurús de lujos falsos. Las reglas están en `SISTEMA_LLM` y `_prompt_llm` dentro de `purffle_shorts/short_es.py`:
+
+- Tono antihumo y en "tú", sin promesas de riqueza ni lujos, y solo con datos verificados de la región.
+- Estructura de 45 a 55 s: gancho de 0 a 3 s con patrones probados, un obstáculo y un paso accionable, y un llamado a la acción sin presión hacia el enlace del perfil.
+- Si el tema menciona la **Franquicia IA**, el guion explica el precio (97 dólares), la comisión del 50 % (48,50 dólares por venta), que sin ventas no hay ingresos y que el creador gana comisión. Si el modelo lo omite, se añade una frase fija que nunca se recorta.
+- SEO: el título empieza con una búsqueda real de YouTube en Colombia, la frase clave se repite en las dos primeras líneas de la descripción y siempre se añade la nota de enlaces de afiliado.
+
+Si el guion incumple alguna regla, se le pide una corrección al modelo. Lo que siga faltando se registra en `metadatos.json` (`reglas_pendientes`).
 
 **En tu equipo:**
 

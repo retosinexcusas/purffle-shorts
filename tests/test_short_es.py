@@ -40,7 +40,7 @@ def test_guion_plantilla_en_espanol_y_con_busquedas_en_ingles():
     g = short_es.generar_guion("los volcanes", usar_llm=False)
     assert g.fuente == "plantilla"
     assert all(f.texto for f in g.frases)
-    assert "Sígueme" in g.frases[-1].texto
+    assert "enlace de mi perfil" in g.frases[-1].texto
     assert all(f.busqueda_en and f.busqueda_en.isascii() for f in g.frases)
     assert short_es.titulo_final(g).endswith("#Shorts")
 
@@ -49,7 +49,7 @@ def test_guion_wikipedia(monkeypatch):
     extracto = ("El pulpo (Octopoda) es un molusco cefalópodo. Tiene ocho brazos con ventosas. "
                 "Posee tres corazones y sangre azul. Es uno de los invertebrados más inteligentes.")
     monkeypatch.setattr(short_es, "_wikipedia_extracto", lambda tema: ("Octopoda", extracto))
-    g = short_es.generar_guion("el pulpo", usar_llm=False)
+    g = short_es.generar_guion("el pulpo", usar_llm=False, usar_wikipedia=True)
     assert g.fuente == "wikipedia"
     assert "(Octopoda)" not in g.texto and "tres corazones" in g.texto
     assert "Wikipedia" in g.descripcion
@@ -193,8 +193,9 @@ def test_consultas_llevan_el_tema_en_ingles(monkeypatch):
         short_es.Frase("Y ocho brazos."),
         short_es.Frase("Sígueme para más.")])
     monkeypatch.setattr(short_es, "guion_con_wikipedia", lambda tema: g)
-    out = short_es.generar_guion("los pulpos", usar_llm=False)
-    assert [f.busqueda_en for f in out.frases] == ["octopus", "octopus heart", "octopus arm", "octopus"]
+    out = short_es.generar_guion("los pulpos", usar_llm=False, usar_wikipedia=True)
+    # el cierre sin enlace se completa con el CTA del canal (última toma: el tema)
+    assert [f.busqueda_en for f in out.frases] == ["octopus", "octopus heart", "octopus arm", "octopus", "octopus"]
 
 
 def test_descargas_fallidas_reutilizan_clips(tmp_path, monkeypatch):
@@ -280,3 +281,98 @@ def test_tomas_sin_clip_reutilizan_los_descargados(tmp_path, monkeypatch):
     loc = short_es.Locucion(tmp_path / "voz.wav", 4.0, [], [(0, 2), (2, 4)])
     short_es.renderizar(g, loc, tmp_path, tmp_path / "s.mp4", "clave")
     assert usados == [tmp_path / "octopus.mp4"] * 2
+
+
+# ------------------------------------------------------------------ cliente ideal y reglas del canal
+def _guion_llm(**kw):
+    datos = {"frase_clave": "ganar dinero con IA", "titulo": "Ganar dinero con IA 2026 solo con tu celular",
+             "descripcion": "Ganar dinero con IA sin humo.\nSi buscas ganar dinero con IA, empieza aquí.",
+             "hashtags": ["#GanarDineroConIA", "emprendimiento"],
+             "frases": [{"texto": "Solo con tu celular y una hora al día puedes empezar esto.",
+                         "busqueda_en": "person using smartphone"},
+                        {"texto": " ".join(["paso"] * 100) + ".", "busqueda_en": "notebook"},
+                        {"texto": "Si quieres el mapa paso a paso, sin humo, revisa el enlace de mi perfil.",
+                         "busqueda_en": "smiling"}]}
+    datos.update(kw)
+    return datos
+
+
+def test_prompt_incluye_cliente_ideal_y_reglas():
+    sistema = short_es.SISTEMA_LLM
+    for texto in ("25 a 45 años", "Colombia", "1 a 2 horas al día", "antihumo", "PROHIBIDO prometer riqueza",
+                  '"tú"', "lujos"):
+        assert texto in sistema
+    prompt = short_es._prompt_llm("cómo empezar con 1 hora al día")
+    for texto in ("Gancho (0-3 s)", "Si yo tuviera que", "La dura verdad sobre", "últimos 8 s",
+                  "enlace de mi perfil", "«ingresos extra desde casa»", "«ganar dinero con IA»",
+                  "«emprender sin dinero»", "2026", "línea 1 y repetirse"):
+        assert texto in prompt
+    assert "Franquicia IA" not in prompt                        # sin bloque comercial si el tema no lo pide
+
+
+def test_prompt_franquicia_exige_transparencia():
+    prompt = short_es._prompt_llm("qué es la Franquicia IA y si vale la pena")
+    for texto in ("97 dólares", "50 %", "48,50 dólares", "sin ventas no hay ingresos",
+                  "tú (el creador) ganas una comisión"):
+        assert texto in prompt
+
+
+def test_llm_recibe_correcciones_y_se_ajusta(monkeypatch):
+    from purffle_shorts import llm as llm_mod
+    prompts = []
+
+    class LLMFalso:
+        def __init__(self, settings):
+            pass
+
+        def complete_json(self, sistema, prompt, **kw):
+            prompts.append(prompt)
+            return _guion_llm(titulo="Mi historia") if len(prompts) == 1 else _guion_llm()
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setattr(llm_mod, "LLM", LLMFalso)
+    g = short_es.guion_con_llm("ganar dinero con IA")
+    assert len(prompts) == 2 and "debe empezar con la frase clave" in prompts[1]
+    assert g.titulo.startswith("Ganar dinero con IA") and g.frase_clave == "ganar dinero con IA"
+    assert short_es.problemas_del_guion(g) == []
+
+
+def test_franquicia_sin_transparencia_se_completa_y_no_se_recorta():
+    g = short_es._guion_desde_json("la Franquicia IA", _guion_llm())
+    assert "Franquicia IA cuesta 97" not in g.texto
+    g = short_es.ajustar_a_reglas(g)
+    assert short_es._menciona_transparencia(g.texto)
+    assert g.frases[-2].texto == short_es.FRASE_TRANSPARENCIA_FRANQUICIA
+    assert g.frases[-2].fija and g.frases[0].fija and g.frases[-1].fija and not g.frases[1].fija
+
+
+def test_cierre_sin_enlace_recibe_el_cta():
+    datos = _guion_llm()
+    datos["frases"][-1]["texto"] = "Gracias por ver."
+    g = short_es.ajustar_a_reglas(short_es._guion_desde_json("x", datos))
+    assert g.frases[-1].texto == short_es.CTA_POR_DEFECTO
+
+
+def test_detecta_promesas_prohibidas():
+    datos = _guion_llm()
+    datos["frases"][1]["texto"] = "Con esto vas a hacerte rico y comprarte un Lamborghini " + "ya " * 95
+    problemas = short_es.problemas_del_guion(short_es._guion_desde_json("x", datos))
+    assert any("Promete riqueza" in p for p in problemas)
+
+
+def test_titulo_y_descripcion_seo():
+    g = short_es.ajustar_a_reglas(short_es._guion_desde_json("x", _guion_llm(
+        titulo="Tu primer paso solo con el celular", descripcion="Un video corto.")))
+    assert g.titulo.startswith("Ganar dinero con IA: ")
+    d = short_es.descripcion_final(g, {"ana"}).splitlines()
+    assert "ganar dinero con ia" in d[0].lower() and "ganar dinero con ia" in d[1].lower()
+    texto = "\n".join(d)
+    assert short_es.NOTA_TRANSPARENCIA in texto and "comisión sin costo extra" in texto
+    assert "Pixabay (ana)" in texto and "#ganardineroconia" in texto and texto.rstrip().endswith("#shorts")
+
+
+def test_recorte_respeta_frases_fijas(tmp_path, monkeypatch):
+    monkeypatch.setattr(short_es, "_edge_frase", _voz_falsa(0.62))
+    g = short_es.ajustar_a_reglas(short_es.guion_plantilla("la Franquicia IA"))
+    obligatorias = [f.texto for f in g.frases if f.fija]
+    short_es.locucion_bajo_60s(g, tmp_path, "es-MX-JorgeNeural", "+0%")
+    assert all(t in [f.texto for f in g.frases] for t in obligatorias)

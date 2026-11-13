@@ -11,8 +11,8 @@ Variables de entorno:
     PIXABAY_API_KEY   clave gratuita de https://pixabay.com/api/docs/ (clips de fondo)
     VOZ_ES            voz de edge-tts (por defecto es-MX-JorgeNeural)
     VELOCIDAD_VOZ     velocidad de la voz, p. ej. +10% (por defecto +8%)
-    GEMINI_API_KEY / GROQ_API_KEY   opcionales (niveles gratuitos): un LLM escribe un guion más pulido.
-                      Sin ellas el guion se arma con Wikipedia en español (gratis, sin clave).
+    GEMINI_API_KEY / GROQ_API_KEY   opcionales (niveles gratuitos): un LLM escribe el guion para el cliente
+                      ideal del canal (ver SISTEMA_LLM). Sin ellas se usa una plantilla antihumo del canal.
 
 Todo el texto que ve el público (guion, título, descripción y subtítulos) se genera en español. Solo las
 búsquedas en Pixabay se hacen en inglés, porque ahí sus resultados son mucho mejores.
@@ -43,7 +43,7 @@ DURACION_MAXIMA = 58.5          # margen bajo los 60 s que YouTube exige a un Sh
 VOZ_POR_DEFECTO = "es-MX-JorgeNeural"
 VELOCIDAD_POR_DEFECTO = "+8%"
 VELOCIDAD_MAXIMA = 35           # % — más rápido ya no se entiende bien
-PALABRAS_OBJETIVO = (95, 135)   # ~40-55 s de locución
+PALABRAS_OBJETIVO = (115, 140)  # ~45-55 s de locución con es-MX-JorgeNeural a +8 %
 MAX_SEGUNDOS_POR_TOMA = 5.0     # las frases largas se cubren con varios clips (ritmo de Short)
 PALABRAS_POR_SUBTITULO = 3
 
@@ -200,6 +200,7 @@ def consulta_tema(tema: str) -> str:
 class Frase:
     texto: str
     busqueda_en: str = ""        # consulta en inglés para Pixabay (interna)
+    fija: bool = False           # no se recorta al ajustar la duración (gancho, transparencia, cierre)
 
 
 @dataclass
@@ -210,15 +211,125 @@ class Guion:
     hashtags: list[str]
     frases: list[Frase]
     fuente: str = "plantilla"    # llm | wikipedia | plantilla
+    frase_clave: str = ""        # búsqueda real de YouTube que encabeza el título y la descripción
 
     @property
     def texto(self) -> str:
         return " ".join(f.texto for f in self.frases)
 
 
+# --- Cliente ideal y reglas del canal ---------------------------------------------------------------
+# Búsquedas reales de YouTube (sugerencias del buscador desde Colombia, 11/11/2026).
+PALABRAS_CLAVE_SEO = [
+    "ingresos extra desde casa", "ingresos extra 2026", "generar ingresos extras por internet",
+    "ganar dinero con IA", "ganar dinero con IA 2026", "como ganar dinero con IA sin invertir",
+    "emprender sin dinero", "emprender sin dinero 2026", "emprender desde casa sin dinero",
+    "como emprender sin dejar de trabajar", "trabajar desde casa por internet colombia",
+    "ingresos pasivos con IA", "productos digitales como empezar", "como vender en instagram desde cero",
+    "como conseguir clientes para mi negocio", "productos digitales con IA", "gurus de internet",
+]
+HASHTAGS_BASE = ["ingresosextra", "emprendimiento", "emprendedores", "ganardineroconia", "emprendersindinero",
+                 "emprendedoradigital", "productosdigitales", "ingresospasivos", "emprendersinmiedo"]
+FRANQUICIA_RE = re.compile(r"franquicia\s+(?:de\s+)?(?:ia|i\.\s*a\.?|inteligencia\s+artificial)\b", re.I)
+CTA_POR_DEFECTO = ("Si quieres el mapa paso a paso con inteligencia artificial, sin humo ni promesas falsas, "
+                   "revisa el enlace de mi perfil.")
+FRASE_TRANSPARENCIA_FRANQUICIA = (
+    "Te lo digo claro: la Franquicia IA cuesta 97 dólares, enseña embudos, pauta y automatización con IA, "
+    "ganas el 50 por ciento, unos 48,50 dólares, por cada venta con tu enlace, sin ventas no hay ingresos, "
+    "y yo gano una comisión si entras con el mío.")
+NOTA_TRANSPARENCIA = ("Transparencia: en este canal comparto herramientas gratuitas y enlaces de afiliado. Si compras "
+                      "a través de ellos, puedo ganar una comisión sin costo extra para ti.")
+PROMESAS_PROHIBIDAS = re.compile(
+    r"\b(?:hazte rico|hacerte rico|volverte rico|dinero f[aá]cil|riqueza r[aá]pida|garantizad[oa]s?|"
+    r"garantiza|sin esfuerzo|lamborghini|ferrari|yate|mansi[oó]n|millonario en)\b", re.I)
+
+SISTEMA_LLM = """Eres guionista de YouTube Shorts para un canal de emprendimiento digital "antihumo" en español \
+latinoamericano (con naturalidad colombiana, sin modismos forzados). Escribes EXCLUSIVAMENTE en español; solo el \
+campo 'busqueda_en' va en inglés. Respondes solo con JSON válido.
+
+A QUIÉN LE HABLAS (cliente ideal, siempre en segunda persona: "tú"):
+- Adulto latinoamericano, sobre todo de Colombia, de 25 a 45 años. Empleado con un sueldo que no alcanza o \
+independiente con ingresos inestables; quizá ya intentó vender por internet sin resultados.
+- Tiene celular, redes y ganas, pero no tiene método, audiencia ni producto. Solo dispone de 1 a 2 horas al día \
+(de noche o fines de semana) y usa solo su celular. Se autofinancia: cada peso le pesa.
+- Le duele que su ingreso no alcanza ni depende de él. Siente que va tarde, tiene miedo a fracasar y vergüenza \
+de mostrarse; está agotado, pero sigue con esperanza.
+- Teme que lo estafen los gurús de lujos falsos y de "millonario en 30 días". Ya pagó cursos que no le sirvieron.
+- Anhela un ingreso propio, pequeño pero constante y predecible, control de su tiempo, trabajar desde casa, y \
+que su familia vea que sí funcionó. No busca ser millonario: busca dejar de depender.
+- Su ciclo de abandono: consume tutoriales sin orden, salta de idea en idea, compra un curso con promesa grande, \
+no ve resultados rápidos, pierde la confianza y abandona. Tu contenido corta ese ciclo: orden antes de comprar y \
+resultados pequeños y medibles antes de rendirse.
+
+TONO Y ESTILO (obligatorio):
+- Cercano, directo, honesto y antihumo. Habla de "tú" y del resultado del espectador, nunca de tus logros.
+- PROHIBIDO prometer riqueza rápida, ingresos garantizados o "dinero fácil", y mencionar o mostrar lujos \
+(carros, viajes, mansiones). Nada de cifras de ganancias inventadas.
+- Si usas un dato, usa solo estos (cita la fuente de forma natural, sin URL):
+  * En Colombia, el 48 % de los ocupados gana menos de un salario mínimo (DANE).
+  * La informalidad laboral cerró 2025 en 55,7 % en Colombia (Portafolio).
+  * El 86,6 % de los emprendedores colombianos empieza por necesidad (GEM).
+  * En 2024, el 47 % de quienes veían oportunidades no emprendía por miedo a fracasar (GEM).
+  * Solo el 33,5 % de las empresas colombianas sigue operando a los cinco años (Confecámaras).
+  * En Latinoamérica, el 43 % de quienes estudian online sufrió un incidente digital en el último año (Kaspersky).
+- Frases cortas, fáciles de leer en voz alta. Escribe los montos con palabras que se lean bien ("97 dólares").
+"""
+
+
+def _bloque_franquicia(tema: str) -> str:
+    if not FRANQUICIA_RE.search(tema):
+        return ""
+    return """
+TRANSPARENCIA COMERCIAL (el tema menciona la Franquicia IA; es obligatorio, en una o dos frases del desarrollo):
+- Di que cuesta 97 dólares y que enseña embudos, pauta y automatización con inteligencia artificial.
+- Di que se gana el 50 % de comisión, unos 48,50 dólares, por cada venta referida con el propio enlace.
+- Di explícitamente que sin ventas no hay ingresos (y que la pauta pagada, si se usa, es un gasto aparte).
+- Aclara explícitamente que tú (el creador) ganas una comisión si la persona entra con tu enlace.
+- No presentes casos de éxito de la marca como resultados típicos ni prometas ingresos.
+"""
+
+
+def _prompt_llm(tema: str, problemas: list[str] | None = None) -> str:
+    claves = ", ".join(f"«{c}»" for c in PALABRAS_CLAVE_SEO)
+    correccion = ""
+    if problemas:
+        correccion = "\nTU VERSIÓN ANTERIOR NO CUMPLÍA ESTO; corrígelo:\n" + "\n".join(f"- {p}" for p in problemas)
+    return f"""Escribe el guion de un YouTube Short vertical sobre: «{tema}».
+Si el tema es general, conéctalo con el objetivo del espectador (un ingreso digital propio, paso a paso) sin forzarlo.
+
+ESTRUCTURA (45 a 55 segundos; entre {PALABRAS_OBJETIVO[0]} y {PALABRAS_OBJETIVO[1]} palabras en total; 6 a 9 frases):
+1. Gancho (0-3 s): la primera frase, de 6 a 14 palabras. Usa uno de estos patrones probados:
+   - Restricción que baja la barrera: "Solo con tu celular…", "Si tienes 1 hora al día…", "Si ganas el mínimo…".
+   - "Si yo tuviera que empezar hoy desde cero…" (un plan que el espectador puede copiar).
+   - "La dura verdad sobre…".
+   - Herramienta + resultado realista (sin cifras infladas).
+2. Desarrollo (3-45 s): ataca UN obstáculo real (falta de tiempo, exceso de tutoriales sin orden, miedo a perder \
+dinero o a la estafa, no saber de tecnología) y entrega UN paso accionable para hoy, una comparación clara o \
+herramientas gratuitas concretas.
+3. Cierre y llamado a la acción (últimos 8 s): la última frase, de 15 a 22 palabras, invita al siguiente paso sin \
+presión ni urgencia falsa. Usa una variante natural de: "{CTA_POR_DEFECTO}" Debe mencionar el enlace de tu perfil.
+{_bloque_franquicia(tema)}
+SEO PARA YOUTUBE SHORTS (todo en español):
+- 'frase_clave': elige la búsqueda real que mejor encaje con el tema, copiada tal cual de esta lista: {claves}.
+- 'titulo': máximo 70 caracteres, EMPIEZA con la frase_clave (puedes añadir "2026" o "Colombia"), habla de "tú" \
+y de su resultado, sin clickbait de lujos ni promesas. No incluyas "#Shorts" (se añade solo).
+- 'descripcion': 2 o 3 líneas separadas por saltos de línea. La frase_clave debe aparecer en la línea 1 y repetirse \
+en la línea 2. No incluyas la nota de afiliados ni hashtags (se añaden solos).
+- 'hashtags': 5 a 8, sin el símbolo #, en minúsculas y sin espacios; combina generales (emprendimiento, \
+emprendedores, ingresosextra, ganardineroconia, emprendersindinero) con uno específico del tema.
+- 'busqueda_en': para cada frase, 2 a 4 palabras EN INGLÉS que describan una toma de video de stock filmable \
+(p. ej. "person using smartphone night", "laptop notebook planning", "home office desk"). Nada de lujos.
+- Sin emojis, hashtags, acotaciones ni etiquetas como "Narrador:" dentro de 'texto'.
+{correccion}
+Formato JSON:
+{{"frase_clave": "...", "titulo": "...", "descripcion": "...", "hashtags": ["..."],
+  "frases": [{{"texto": "...", "busqueda_en": "..."}}]}}"""
+
+
 ESQUEMA_LLM = {
     "type": "object",
     "properties": {
+        "frase_clave": {"type": "string"},
         "titulo": {"type": "string"},
         "descripcion": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
@@ -227,52 +338,37 @@ ESQUEMA_LLM = {
             "properties": {"texto": {"type": "string"}, "busqueda_en": {"type": "string"}},
             "required": ["texto", "busqueda_en"], "additionalProperties": False}},
     },
-    "required": ["titulo", "descripcion", "hashtags", "frases"],
+    "required": ["frase_clave", "titulo", "descripcion", "hashtags", "frases"],
     "additionalProperties": False,
 }
 
-SISTEMA_LLM = (
-    "Eres guionista de YouTube Shorts para un canal hispanohablante. Escribes EXCLUSIVAMENTE en español "
-    "neutro (latinoamericano), con frases cortas, datos concretos y verificables, y un tono enérgico. "
-    "Nunca escribas en inglés salvo en el campo 'busqueda_en'. Responde solo con JSON válido."
-)
+
+def _menciona_transparencia(texto: str) -> bool:
+    t = sin_acentos(texto.lower())
+    return "97" in t and "48" in t and "comision" in t and ("sin ventas" in t or "no hay ingreso" in t)
 
 
-def _prompt_llm(tema: str) -> str:
-    return f"""Escribe el guion de un YouTube Short vertical sobre: «{tema}».
+def problemas_del_guion(guion: Guion) -> list[str]:
+    """Reglas del canal que el guion no cumple (se le devuelven al LLM para que corrija)."""
+    problemas = []
+    n = contar_palabras(guion.texto)
+    if not PALABRAS_OBJETIVO[0] <= n <= PALABRAS_OBJETIVO[1]:
+        problemas.append(f"El guion tiene {n} palabras; debe tener entre {PALABRAS_OBJETIVO[0]} y "
+                         f"{PALABRAS_OBJETIVO[1]} (45 a 55 segundos).")
+    if PROMESAS_PROHIBIDAS.search(guion.texto + " " + guion.titulo):
+        problemas.append("Promete riqueza, ingresos garantizados o menciona lujos: está prohibido.")
+    cierre = sin_acentos(guion.frases[-1].texto.lower()) if guion.frases else ""
+    if "enlace" not in cierre and "perfil" not in cierre:
+        problemas.append("La última frase debe invitar, sin presión, a revisar el enlace del perfil.")
+    if FRANQUICIA_RE.search(guion.tema) and not _menciona_transparencia(guion.texto):
+        problemas.append("Falta la transparencia de la Franquicia IA: 97 dólares, 50 % de comisión (48,50 dólares) "
+                         "por venta, sin ventas no hay ingresos y que tú ganas comisión con tu enlace.")
+    if guion.frase_clave and not guion.titulo.lower().startswith(guion.frase_clave.lower()):
+        problemas.append(f"El título debe empezar con la frase clave «{guion.frase_clave}».")
+    return problemas
 
-Reglas:
-- Entre {PALABRAS_OBJETIVO[0]} y {PALABRAS_OBJETIVO[1]} palabras en total (debe durar menos de 55 segundos leído).
-- 6 a 9 frases. La primera es un gancho potente (pregunta o dato sorprendente) de menos de 15 palabras.
-- La última frase invita a seguir el canal, en español.
-- Sin emojis, sin hashtags, sin acotaciones ni etiquetas como "Narrador:" dentro de 'texto'.
-- Todo en español: 'titulo' (máximo 70 caracteres, llamativo), 'descripcion' (2 o 3 frases),
-  'hashtags' (5 a 8, en español, sin el símbolo #).
-- 'busqueda_en': 2 a 4 palabras EN INGLÉS que describan una toma de video de stock para esa frase
-  (objetos o escenas filmables, p. ej. "black hole space", "ocean waves sunset").
 
-Formato JSON:
-{{"titulo": "...", "descripcion": "...", "hashtags": ["..."],
-  "frases": [{{"texto": "...", "busqueda_en": "..."}}]}}"""
-
-
-def guion_con_llm(tema: str) -> Guion | None:
-    """Usa el LLM configurado (p. ej. el nivel gratuito de Gemini o Groq) si hay alguna clave."""
-    try:
-        from .config import Settings
-        from .llm import LLM, LLMError, available_providers
-        settings = Settings.from_env()
-        if not available_providers(settings) and not settings.llm_base_url and settings.llm_provider == "auto":
-            return None
-        llm = LLM(settings)
-        data = llm.complete_json(SISTEMA_LLM, _prompt_llm(tema), schema=ESQUEMA_LLM, max_tokens=2000,
-                                 temperature=0.8)
-    except LLMError as e:
-        log.warning("El LLM no respondió (%s); uso Wikipedia en español.", e)
-        return None
-    except Exception as e:
-        log.warning("No se pudo usar el LLM (%s); uso Wikipedia en español.", e)
-        return None
+def _guion_desde_json(tema: str, data: dict) -> Guion | None:
     frases = []
     for f in data.get("frases") or []:
         if isinstance(f, dict):
@@ -284,7 +380,94 @@ def guion_con_llm(tema: str) -> Guion | None:
     hashtags = [re.sub(r"[^\wáéíóúüñ]", "", str(h).lower().lstrip("#")) for h in data.get("hashtags") or []]
     return Guion(tema=tema, titulo=str(data.get("titulo") or tema).strip(),
                  descripcion=str(data.get("descripcion") or "").strip(),
-                 hashtags=[h for h in hashtags if h][:8], frases=frases, fuente="llm")
+                 hashtags=[h for h in hashtags if h][:8], frases=frases, fuente="llm",
+                 frase_clave=str(data.get("frase_clave") or "").strip())
+
+
+def guion_con_llm(tema: str) -> Guion | None:
+    """Usa el LLM configurado (p. ej. el nivel gratuito de Gemini o Groq) si hay alguna clave.
+
+    Si el guion incumple alguna regla del canal, se le pide una corrección una vez; lo que siga faltando lo
+    arregla ``ajustar_a_reglas`` (CTA, transparencia, título)."""
+    import time
+    try:
+        from .config import Settings
+        from .llm import LLM, LLMError, available_providers
+        settings = Settings.from_env()
+        if not available_providers(settings) and not settings.llm_base_url and settings.llm_provider == "auto":
+            return None
+        llm = LLM(settings)
+    except Exception as e:
+        log.warning("No se pudo preparar el LLM (%s); uso la plantilla del canal.", e)
+        return None
+    guion, problemas = None, None
+    for _ronda in range(2):
+        data = None
+        for intento in range(3):                     # Gemini responde 503 cuando está saturado
+            try:
+                data = llm.complete_json(SISTEMA_LLM, _prompt_llm(tema, problemas), schema=ESQUEMA_LLM,
+                                         max_tokens=3000, temperature=0.8)
+                break
+            except LLMError as e:
+                log.warning("El LLM no respondió (intento %d/3): %s", intento + 1, str(e)[:200])
+                if intento < 2:
+                    time.sleep(20)
+        if data is None:
+            break
+        nuevo = _guion_desde_json(tema, data)
+        if nuevo:
+            guion = nuevo
+            problemas = problemas_del_guion(guion)
+            if not problemas:
+                break
+            log.info("El guion incumple %d regla(s); pido una corrección: %s", len(problemas), " | ".join(problemas))
+    if guion is None:
+        log.warning("El LLM no dio un guion válido; uso la plantilla del canal.")
+    return guion
+
+
+def elegir_frase_clave(tema: str) -> str:
+    t = sin_acentos(tema.lower())
+    if re.search(r"\b(ia|inteligencia artificial|chatgpt|gemini|claude)\b", t):
+        return "ganar dinero con IA"
+    if "sin dinero" in t or "sin invertir" in t:
+        return "emprender sin dinero"
+    if "instagram" in t:
+        return "como vender en instagram desde cero"
+    if "producto" in t:
+        return "productos digitales como empezar"
+    if "cliente" in t:
+        return "como conseguir clientes para mi negocio"
+    return "ingresos extra desde casa"
+
+
+def ajustar_a_reglas(guion: Guion) -> Guion:
+    """Garantiza lo que no puede quedar a criterio del LLM: cierre con CTA, transparencia comercial y SEO."""
+    if not guion.frase_clave:
+        guion.frase_clave = elegir_frase_clave(guion.tema)
+    cierre = sin_acentos(guion.frases[-1].texto.lower())
+    if "enlace" not in cierre and "perfil" not in cierre:
+        guion.frases.append(Frase(CTA_POR_DEFECTO))
+    if FRANQUICIA_RE.search(guion.tema):
+        if not _menciona_transparencia(guion.texto):
+            guion.frases.insert(len(guion.frases) - 1, Frase(FRASE_TRANSPARENCIA_FRANQUICIA))
+        for f in guion.frases:
+            t = sin_acentos(f.texto.lower())
+            if "97" in t or "comision" in t or "sin ventas" in t:
+                f.fija = True
+    guion.frases[0].fija = True
+    guion.frases[-1].fija = True
+    titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
+    if guion.frase_clave.lower() not in titulo.lower():
+        clave = guion.frase_clave[:1].upper() + guion.frase_clave[1:]
+        titulo = f"{clave}: {titulo}"
+    guion.titulo = titulo
+    vistos = []
+    for h in [*guion.hashtags, *HASHTAGS_BASE]:
+        if h and h not in vistos:
+            vistos.append(h)
+    guion.hashtags = vistos[:8]
+    return guion
 
 
 ARTICULOS_ES = ("el", "la", "los", "las", "un", "una", "unos", "unas", "lo")
@@ -375,24 +558,38 @@ def guion_con_wikipedia(tema: str) -> Guion | None:
 
 
 def guion_plantilla(tema: str) -> Guion:
-    """Último recurso sin red: un guion genérico pero coherente, siempre en español."""
+    """Sin LLM: un guion antihumo genérico para el cliente ideal, siempre en español."""
     frases = [
-        f"¿Alguna vez te has detenido a pensar en {tema}?",
-        f"Parece algo sencillo, pero {tema} esconde más de lo que imaginas.",
-        "Detrás de cada detalle hay años de historia, ciencia y curiosidad humana.",
-        "Muchas de las cosas que damos por hechas empezaron como una pregunta como esta.",
-        f"Y lo más interesante es que todavía se sigue descubriendo algo nuevo sobre {tema}.",
-        "La próxima vez que lo veas, recuerda que siempre hay una historia que contar.",
-        "Sígueme para más datos curiosos como este.",
+        (f"Si tienes solo una hora al día y tu celular, escucha esto sobre {tema}.", "person using smartphone night"),
+        ("El problema casi nunca es la falta de talento, es saltar de tutorial en tutorial sin orden.",
+         "tired person laptop"),
+        ("Por eso hoy no vas a comprar nada: vas a escoger un solo camino y un solo paso.", "notebook planning desk"),
+        ("Abre las notas de tu celular y escribe qué sabes hacer y quién te ha pagado por eso.",
+         "writing notes smartphone"),
+        ("Con eso defines una oferta pequeña que puedes probar esta semana con herramientas gratis.",
+         "small business online"),
+        ("Tu meta no es un millón, es lograr tu primer resultado pequeño y medible.", "checklist goal"),
+        ("Y desconfía de quien te muestre carros y viajes en lugar de un proceso claro.", "thinking person doubt"),
+        (CTA_POR_DEFECTO, "person smiling smartphone"),
     ]
-    return Guion(tema=tema, titulo=truncate_words(f"Lo que no sabías sobre {tema}", 70),
-                 descripcion=f"Un minuto para mirar {tema} con otros ojos.",
-                 hashtags=["curiosidades", "datoscuriosos", "sabiasque", "shortsenespañol"],
-                 frases=[Frase(f) for f in frases], fuente="plantilla")
+    clave = elegir_frase_clave(tema)
+    clave_titulo = clave[:1].upper() + clave[1:]
+    return Guion(
+        tema=tema,
+        titulo=truncate_words(f"{clave_titulo} 2026: paso a paso y sin humo" if clave in tema.lower()
+                              else f"{clave_titulo} 2026: {tema}, paso a paso", 70),
+        descripcion=(f"{clave_titulo}: un paso concreto sobre {tema}, sin humo y solo con tu celular.\n"
+                     f"Si buscas {clave} con 1 hora al día, empieza por aquí."),
+        hashtags=["ingresosextra", "emprendimiento", "emprendedores", "emprendersindinero"],
+        frases=[Frase(t, q) for t, q in frases], fuente="plantilla", frase_clave=clave)
 
 
-def generar_guion(tema: str, usar_llm: bool = True) -> Guion:
-    guion = (guion_con_llm(tema) if usar_llm else None) or guion_con_wikipedia(tema) or guion_plantilla(tema)
+def generar_guion(tema: str, usar_llm: bool = True, usar_wikipedia: bool = False) -> Guion:
+    """LLM (con las reglas del canal) -> Wikipedia (solo si se pide; da guiones enciclopédicos) -> plantilla."""
+    guion = ((guion_con_llm(tema) if usar_llm else None)
+             or (guion_con_wikipedia(tema) if usar_wikipedia else None)
+             or guion_plantilla(tema))
+    guion = ajustar_a_reglas(guion)
     log.info("Guion generado (%s): %d frases, %d palabras.", guion.fuente, len(guion.frases),
              contar_palabras(guion.texto))
     tema_en = consulta_tema(tema)
@@ -486,8 +683,11 @@ def locucion_bajo_60s(guion: Guion, carpeta: Path, voz: str, velocidad: str) -> 
         if pct < VELOCIDAD_MAXIMA and exceso < 0.25:
             pct = min(VELOCIDAD_MAXIMA, pct + math.ceil(exceso * 100) + 3)
             log.info("La locución dura %.1f s; subo la velocidad a %+d%%.", loc.duracion, pct)
-        elif len(frases) > 3:
-            quitada = frases.pop(-2)                 # conserva el gancho y la llamada a la acción
+        elif any(not f.fija for f in frases[1:-1]):
+            # Se quita la última frase del desarrollo que no sea obligatoria (gancho, transparencia y cierre
+            # se conservan siempre).
+            idx = max(i for i in range(1, len(frases) - 1) if not frases[i].fija)
+            quitada = frases.pop(idx)
             log.info("La locución dura %.1f s; quito la frase: %s", loc.duracion, quitada.texto)
         else:
             break
@@ -784,7 +984,16 @@ def renderizar(guion: Guion, loc: Locucion, carpeta: Path, salida: Path, clave_p
 
 # ------------------------------------------------------------------------------------------ todo junto
 def descripcion_final(guion: Guion, autores: set[str]) -> str:
-    partes = [guion.descripcion.strip()]
+    """Frase clave en las dos primeras líneas, nota de afiliados, créditos y hashtags."""
+    lineas = [ln.strip() for ln in guion.descripcion.strip().splitlines() if ln.strip()]
+    clave = guion.frase_clave
+    if clave:
+        clave_m = clave[:1].upper() + clave[1:]
+        if not lineas or clave.lower() not in lineas[0].lower():
+            lineas.insert(0, f"{clave_m}: {guion.tema}, explicado sin humo y paso a paso.")
+        if len(lineas) < 2 or clave.lower() not in lineas[1].lower():
+            lineas.insert(1, f"Si buscas {clave} con poco tiempo y solo tu celular, este video es para ti.")
+    partes = ["\n".join(lineas), NOTA_TRANSPARENCIA]
     if autores:
         partes.append("Videos de fondo: Pixabay (" + ", ".join(sorted(autores)) + ").")
     partes.append("Voz generada con inteligencia artificial.")
@@ -799,7 +1008,7 @@ def titulo_final(guion: Guion) -> str:
 
 def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = VOZ_POR_DEFECTO,
                 velocidad: str = VELOCIDAD_POR_DEFECTO, clave_pixabay: str = "", usar_llm: bool = True,
-                conservar_temporales: bool = False) -> Path:
+                usar_wikipedia: bool = False, conservar_temporales: bool = False) -> Path:
     tema = re.sub(r"\s+", " ", tema).strip()
     if not tema:
         raise ValueError("El tema no puede estar vacío.")
@@ -809,7 +1018,7 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
     trabajo.mkdir(exist_ok=True)
 
     log.info("1/4 Escribiendo el guion sobre «%s»…", tema)
-    guion = generar_guion(tema, usar_llm=usar_llm)
+    guion = generar_guion(tema, usar_llm=usar_llm, usar_wikipedia=usar_wikipedia)
     log.info("2/4 Grabando la voz (%s)…", voz)
     loc = locucion_bajo_60s(guion, trabajo, voz, velocidad)
     log.info("    Duración de la locución: %.1f s", loc.duracion)
@@ -823,7 +1032,8 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
     (destino / "titulo.txt").write_text(titulo + "\n", encoding="utf-8")
     (destino / "descripcion.txt").write_text(descripcion + "\n", encoding="utf-8")
     (destino / "guion.txt").write_text("\n".join(f.texto for f in guion.frases) + "\n", encoding="utf-8")
-    meta = {"tema": tema, "titulo": titulo, "descripcion": descripcion, "hashtags": guion.hashtags,
+    meta = {"tema": tema, "titulo": titulo, "frase_clave": guion.frase_clave, "descripcion": descripcion,
+            "hashtags": guion.hashtags, "reglas_pendientes": problemas_del_guion(guion),
             "fuente_guion": guion.fuente, "voz": voz, "duracion_segundos": round(ffmpeg.duration(video), 2),
             "frases": [asdict(f) for f in guion.frases]}
     (destino / "metadatos.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -843,7 +1053,9 @@ def construir_parser() -> argparse.ArgumentParser:
     p.add_argument("--voz", default=os.getenv("VOZ_ES", VOZ_POR_DEFECTO), help="voz de edge-tts")
     p.add_argument("--velocidad", default=os.getenv("VELOCIDAD_VOZ", VELOCIDAD_POR_DEFECTO),
                    help="velocidad de la voz, p. ej. +8%%")
-    p.add_argument("--sin-llm", action="store_true", help="no usar LLM aunque haya clave (usa Wikipedia)")
+    p.add_argument("--sin-llm", action="store_true", help="no usar LLM aunque haya clave (usa la plantilla)")
+    p.add_argument("--wikipedia", action="store_true",
+                   help="si el LLM falla, usar Wikipedia en español (guion enciclopédico, fuera del nicho)")
     p.add_argument("--conservar-temporales", action="store_true", help="no borrar la carpeta _temporal")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -866,6 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         video = crear_short(tema, args.salida, voz=args.voz, velocidad=args.velocidad,
                             clave_pixabay=os.getenv("PIXABAY_API_KEY", "").strip(), usar_llm=not args.sin_llm,
+                            usar_wikipedia=args.wikipedia,
                             conservar_temporales=args.conservar_temporales)
     except Exception as e:
         log.error("Error al generar el Short: %s", e)
