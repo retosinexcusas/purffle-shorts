@@ -372,6 +372,41 @@ def _guion_desde_json(tema: str, data: dict) -> Guion | None:
                  frase_clave=str(data.get("frase_clave") or "").strip())
 
 
+# Preferencias para elegir un modelo de chat de Groq entre los que la cuenta tiene disponibles.
+_PREFERENCIA_GROQ = ("llama-3.3-70b", "llama-4-maverick", "gpt-oss-120b", "kimi-k2", "llama-4", "qwen",
+                     "llama", "gpt-oss")
+_NO_CHAT = ("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "prompt-guard", "compound")
+
+
+def elegir_modelo_groq(modelos: list[str]) -> str | None:
+    candidatos = [m for m in modelos if not any(x in m.lower() for x in _NO_CHAT)]
+    for preferido in _PREFERENCIA_GROQ:
+        for m in candidatos:
+            if preferido in m.lower():
+                return m
+    return candidatos[0] if candidatos else None
+
+
+def _configurar_modelo_groq() -> None:
+    """Groq retira modelos a menudo: si no se fijó GROQ_MODEL, se elige uno que la cuenta tenga disponible."""
+    import os
+    clave = os.getenv("GROQ_API_KEY", "").strip()
+    if not clave or os.getenv("GROQ_MODEL", "").strip():
+        return
+    try:
+        r = http().get("https://api.groq.com/openai/v1/models", timeout=15,
+                       headers={"Authorization": f"Bearer {clave}"})
+        r.raise_for_status()
+        modelos = [m["id"] for m in r.json().get("data", []) if m.get("id") and m.get("active", True)]
+    except Exception as e:
+        log.warning("No se pudo consultar la lista de modelos de Groq: %s", e)
+        return
+    elegido = elegir_modelo_groq(modelos)
+    if elegido:
+        os.environ["GROQ_MODEL"] = elegido
+        log.info("Modelo de Groq: %s", elegido)
+
+
 def guion_con_llm(tema: str) -> Guion | None:
     """Usa el LLM configurado (p. ej. el nivel gratuito de Gemini o Groq) si hay alguna clave.
 
@@ -384,6 +419,7 @@ def guion_con_llm(tema: str) -> Guion | None:
         settings = Settings.from_env()
         if not available_providers(settings) and not settings.llm_base_url and settings.llm_provider == "auto":
             return None
+        _configurar_modelo_groq()
         llm = LLM(settings)
     except Exception as e:
         log.warning("No se pudo preparar el LLM (%s); uso la plantilla del canal.", e)

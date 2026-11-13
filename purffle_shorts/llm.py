@@ -282,6 +282,8 @@ class AnthropicProvider(Provider):
 
 def build_provider(name: str, settings: Settings, model: str = "") -> Provider:
     preset = PRESETS[name]
+    # GROQ_MODEL, GEMINI_MODEL...: the model of a provider used as a fallback (LLM_MODEL is the primary's).
+    model = model or os.getenv(f"{name.upper()}_MODEL", "").strip()
     chosen = model
     model = model or preset.default_model
     key = _key_for(preset, settings)

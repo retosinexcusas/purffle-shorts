@@ -406,3 +406,42 @@ def test_groq_es_respaldo_de_gemini(monkeypatch):
     assert [str(p).split(":")[0] for p in LLM(Settings.from_env()).providers] == ["gemini", "groq"]
     monkeypatch.delenv("GROQ_API_KEY")               # sin la clave de Groq, Gemini sigue funcionando solo
     assert [str(p).split(":")[0] for p in LLM(Settings.from_env()).providers] == ["gemini"]
+
+
+def test_elegir_modelo_groq():
+    disponibles = ["whisper-large-v3", "meta-llama/llama-prompt-guard-2-86m", "openai/gpt-oss-120b",
+                   "meta-llama/llama-4-maverick-17b-128e-instruct", "playai-tts"]
+    assert short_es.elegir_modelo_groq(disponibles) == "meta-llama/llama-4-maverick-17b-128e-instruct"
+    assert short_es.elegir_modelo_groq(["openai/gpt-oss-120b", "whisper-large-v3"]) == "openai/gpt-oss-120b"
+    assert short_es.elegir_modelo_groq(["whisper-large-v3"]) is None
+
+
+def test_groq_model_se_usa_en_el_respaldo(monkeypatch):
+    from purffle_shorts.config import Settings
+    from purffle_shorts.llm import LLM
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GROQ_API_KEY", "q")
+    monkeypatch.setenv("LLM_FALLBACKS", "groq")
+    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-120b")
+    assert str(LLM(Settings.from_env()).providers[1]) == "groq:openai/gpt-oss-120b"
+
+
+def test_configurar_modelo_groq_consulta_la_cuenta(monkeypatch):
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"id": "whisper-large-v3"}, {"id": "openai/gpt-oss-120b", "active": True}]}
+
+    class Sesion:
+        def get(self, url, **kw):
+            assert url.endswith("/models") and kw["headers"]["Authorization"] == "Bearer q"
+            return Resp()
+    monkeypatch.setattr(short_es, "http", lambda: Sesion())
+    monkeypatch.setenv("GROQ_API_KEY", "q")
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+    short_es._configurar_modelo_groq()
+    import os
+    assert os.environ["GROQ_MODEL"] == "openai/gpt-oss-120b"
+    monkeypatch.delenv("GROQ_MODEL")
