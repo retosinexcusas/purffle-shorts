@@ -1037,11 +1037,16 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
 
     titulo = titulo_final(guion)
     descripcion = descripcion_final(guion, autores)
+    log.info("Título: %s", titulo)
+    log.info("Guion (%s):\n%s", guion.fuente, "\n".join(f"  {n}. {f.texto}" for n, f in enumerate(guion.frases, 1)))
+    pendientes = problemas_del_guion(guion)
+    if pendientes:
+        log.warning("Reglas sin cumplir: %s", " | ".join(pendientes))
     (destino / "titulo.txt").write_text(titulo + "\n", encoding="utf-8")
     (destino / "descripcion.txt").write_text(descripcion + "\n", encoding="utf-8")
     (destino / "guion.txt").write_text("\n".join(f.texto for f in guion.frases) + "\n", encoding="utf-8")
     meta = {"tema": tema, "titulo": titulo, "frase_clave": guion.frase_clave, "descripcion": descripcion,
-            "hashtags": guion.hashtags, "reglas_pendientes": problemas_del_guion(guion),
+            "hashtags": guion.hashtags, "reglas_pendientes": pendientes,
             "fuente_guion": guion.fuente, "voz": voz, "duracion_segundos": round(ffmpeg.duration(video), 2),
             "frases": [asdict(f) for f in guion.frases]}
     (destino / "metadatos.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
