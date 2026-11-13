@@ -194,7 +194,7 @@ def test_consultas_llevan_el_tema_en_ingles(monkeypatch):
         short_es.Frase("Sígueme para más.")])
     monkeypatch.setattr(short_es, "guion_con_wikipedia", lambda tema: g)
     out = short_es.generar_guion("los pulpos", usar_llm=False)
-    assert [f.busqueda_en for f in out.frases] == ["octopuses", "octopuses hearts", "octopuses arms", "octopuses"]
+    assert [f.busqueda_en for f in out.frases] == ["octopus", "octopus heart", "octopus arm", "octopus"]
 
 
 def test_descargas_fallidas_reutilizan_clips(tmp_path, monkeypatch):
@@ -250,3 +250,33 @@ def test_descargar_clip_respeta_retry_after(tmp_path, monkeypatch):
     monkeypatch.setattr(short_es, "http", lambda: Sesion())
     destino = short_es.descargar_clip("https://x/1.mp4", tmp_path / "c.mp4")
     assert destino.read_bytes() == b"abc" and esperas == [7.0]
+
+
+def test_singular_en():
+    assert short_es.singular_en("octopuses limbs stories glass people") == "octopus limb story glass person"
+    assert short_es.singular_en("black holes") == "black hole"
+
+
+def test_tomas_sin_clip_reutilizan_los_descargados(tmp_path, monkeypatch):
+    """La primera consulta no da resultados: su toma usa un clip encontrado después, no un fondo liso."""
+    usados = []
+    monkeypatch.setattr(short_es, "preparar_toma", lambda clip, dur, destino, color: usados.append(clip) or destino)
+    monkeypatch.setattr(short_es.ffmpeg, "run", lambda *a, **k: "")
+
+    class Falso:
+        def __init__(self, *a):
+            self.descargados, self.autores = [], set()
+
+        def clip_para(self, q, n):
+            if q == "nada":
+                return None
+            self.descargados.append(tmp_path / f"{q}.mp4")
+            return self.descargados[-1]
+
+        def _reutilizar(self, n):
+            return self.descargados[n % len(self.descargados)]
+    monkeypatch.setattr(short_es, "BuscadorClips", Falso)
+    g = short_es.Guion("x", "t", "d", [], [short_es.Frase("a b", "nada"), short_es.Frase("c d", "octopus")])
+    loc = short_es.Locucion(tmp_path / "voz.wav", 4.0, [], [(0, 2), (2, 4)])
+    short_es.renderizar(g, loc, tmp_path, tmp_path / "s.mp4", "clave")
+    assert usados == [tmp_path / "octopus.mp4"] * 2

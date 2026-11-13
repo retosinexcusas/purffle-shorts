@@ -167,10 +167,32 @@ def traducir_al_ingles(texto: str) -> str:
     return resultado
 
 
+_PLURALES_IRREGULARES = {"people": "person", "children": "child", "men": "man", "women": "woman", "mice": "mouse",
+                         "teeth": "tooth", "feet": "foot", "geese": "goose", "fish": "fish", "species": "species",
+                         "series": "series", "news": "news", "physics": "physics", "mathematics": "mathematics"}
+
+
+def singular_en(texto: str) -> str:
+    """Pixabay etiqueta en singular: "octopuses limbs" -> "octopus limb"."""
+    def una(w: str) -> str:
+        if w in _PLURALES_IRREGULARES:
+            return _PLURALES_IRREGULARES[w]
+        if len(w) <= 3 or w.endswith(("ss", "us", "is", "ous")):
+            return w
+        if w.endswith("ies"):
+            return w[:-3] + "y"
+        if w.endswith(("ses", "xes", "ches", "shes", "zes")):
+            return w[:-2]
+        if w.endswith("s"):
+            return w[:-1]
+        return w
+    return " ".join(una(w) for w in texto.split())
+
+
 def consulta_tema(tema: str) -> str:
-    """El tema traducido al inglés y sin artículos: «los pulpos» -> "octopuses"."""
+    """El tema en inglés, en singular y sin artículos: «los pulpos» -> "octopus"."""
     palabras = [w for w in traducir_al_ingles(tema).split() if w not in STOPWORDS_EN]
-    return " ".join(palabras[:3]) or sin_acentos(tema.lower())
+    return singular_en(" ".join(palabras[:3])) or sin_acentos(tema.lower())
 
 
 # ------------------------------------------------------------------------------------------ guion
@@ -386,7 +408,7 @@ def generar_guion(tema: str, usar_llm: bool = True) -> Guion:
             extra = traducir_al_ingles(clave) if clave else ""
             extra = " ".join(w for w in extra.split() if w not in STOPWORDS_EN and w not in tema_en.split())
             if extra:
-                frase.busqueda_en = f"{tema_en} {extra.split()[0]}"
+                frase.busqueda_en = f"{tema_en} {singular_en(extra.split()[0])}"
     return guion
 
 
@@ -563,6 +585,8 @@ class BuscadorClips:
             try:
                 self._cache[consulta] = with_retries(lambda: buscar_pixabay(consulta, self.clave), attempts=2,
                                                      label=f"Pixabay '{consulta}'")
+                if not self._cache[consulta]:
+                    log.info("Pixabay no tiene clips para '%s'.", consulta)
             except Exception as e:
                 log.warning("Búsqueda en Pixabay fallida para '%s': %s", consulta, e)
                 self._cache[consulta] = []
@@ -580,8 +604,8 @@ class BuscadorClips:
         import time
         if self.fallos_seguidos >= MAX_FALLOS_SEGUIDOS:
             return self._reutilizar(n)
-        palabras = consulta.split()
-        intentos = [consulta, " ".join(palabras[:2]), palabras[0] if palabras else "", self.general]
+        sing = singular_en(consulta).split()
+        intentos = [consulta, " ".join(sing), " ".join(sing[:2]), sing[0] if sing else "", self.general]
         for q in dict.fromkeys(i for i in intentos if i):
             for clip in self._resultados(q):
                 if clip.id in self.usados:
@@ -724,15 +748,19 @@ def planificar_tomas(tramos: list[tuple[float, float]], duracion_total: float) -
 def renderizar(guion: Guion, loc: Locucion, carpeta: Path, salida: Path, clave_pixabay: str) -> set[str]:
     duracion = loc.duracion + 0.35
     tomas = planificar_tomas(loc.tramos, duracion)
-    buscador = BuscadorClips(clave_pixabay, carpeta / "clips", traducir_al_ingles(guion.tema)) \
+    buscador = BuscadorClips(clave_pixabay, carpeta / "clips", consulta_tema(guion.tema)) \
         if clave_pixabay else None
     if not buscador:
         log.warning("PIXABAY_API_KEY no está definida: el fondo será un color liso.")
+    clips = [buscador.clip_para(guion.frases[i].busqueda_en, n + 1) if buscador else None
+             for n, (i, _) in enumerate(tomas)]
+    if buscador and buscador.descargados:              # las tomas sin clip propio reutilizan uno descargado
+        clips = [c or buscador._reutilizar(n + 1) for n, c in enumerate(clips)]
+    elif buscador:
+        log.warning("No se encontró ningún clip en Pixabay: el fondo será un color liso.")
     colores = ["0x1b1f3a", "0x2a1b3a", "0x13303a", "0x3a1b1f"]
-    partes = []
-    for n, (i, dur) in enumerate(tomas):
-        clip = buscador.clip_para(guion.frases[i].busqueda_en, n + 1) if buscador else None
-        partes.append(preparar_toma(clip, dur, carpeta / f"toma_{n:02d}.mp4", colores[i % len(colores)]))
+    partes = [preparar_toma(clip, dur, carpeta / f"toma_{n:02d}.mp4", colores[i % len(colores)])
+              for n, (clip, (i, dur)) in enumerate(zip(clips, tomas))]
     lista = carpeta / "tomas.txt"
     lista.write_text("".join(f"file '{p.name}'\n" for p in partes), encoding="utf-8")
     ffmpeg.run(["-f", "concat", "-safe", "0", "-i", lista.name, "-c", "copy", "fondo.mp4"], cwd=carpeta,
