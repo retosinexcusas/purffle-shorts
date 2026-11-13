@@ -645,3 +645,21 @@ def test_el_guion_de_ejemplo_del_repo_es_valido():
     g = short_es.guion_desde_texto(texto, usar_llm=False)
     assert short_es.problemas_del_guion(g) == [] or all("palabras" in p for p in short_es.problemas_del_guion(g))
     assert short_es.contar_palabras(g.texto) <= short_es.PALABRAS_OBJETIVO[1]
+
+
+def test_frase_clave_sale_del_titulo_propio():
+    assert short_es.frase_clave_en("Gurús de internet: 3 preguntas") == "gurús de internet"
+    texto = "Título: Cómo ser constante en redes sociales con 30 minutos al día\nUna frase de prueba aquí."
+    g = short_es.guion_desde_texto(texto, usar_llm=False)
+    assert g.frase_clave == "cómo ser constante en redes sociales"
+    assert not any("frase clave" in p for p in short_es.problemas_del_guion(g))
+    assert "cómo ser constante en redes sociales" in short_es.descripcion_final(g, set()).splitlines()[0].lower()
+
+
+def test_los_guiones_del_repo_cumplen_las_reglas():
+    from pathlib import Path
+    carpeta = Path(__file__).resolve().parents[1] / "guiones"
+    for f in sorted(carpeta.glob("0*.txt")):
+        g = short_es.guion_desde_texto(f.read_text(encoding="utf-8"), usar_llm=False)
+        assert short_es.problemas_del_guion(g) == [], f.name
+        assert len(short_es.titulo_final(g)) <= 100, f.name

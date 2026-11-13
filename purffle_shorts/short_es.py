@@ -228,7 +228,8 @@ PALABRAS_CLAVE_SEO = [   # las primeras _PALABRAS_CLAVE_PROMPT se le ofrecen al 
     "como vender en instagram desde cero", "como conseguir clientes para mi negocio", "gurus de internet",
     "ingresos extra 2026", "generar ingresos extras por internet", "ganar dinero con IA 2026",
     "emprender sin dinero 2026", "emprender desde casa sin dinero", "ingresos pasivos con IA",
-    "productos digitales con IA",
+    "productos digitales con IA", "como ser constante en redes sociales",
+    "como vender en instagram con pocos seguidores",
 ]
 HASHTAGS_BASE = ["ingresosextra", "emprendimiento", "emprendedores", "ganardineroconia", "emprendersindinero",
                  "emprendedoradigital", "productosdigitales", "ingresospasivos", "emprendersinmiedo"]
@@ -534,8 +535,21 @@ def ajustar_a_reglas(guion: Guion) -> Guion:
     return ajustar_metadatos(guion)
 
 
+def frase_clave_en(titulo: str) -> str:
+    """La búsqueda real de PALABRAS_CLAVE_SEO que contiene el título, con sus tildes ("gurús de internet")."""
+    plano = sin_acentos(titulo.lower())
+    for clave in sorted(PALABRAS_CLAVE_SEO, key=len, reverse=True):
+        i = plano.find(sin_acentos(clave.lower()))
+        if i >= 0:
+            trozo = titulo[i:i + len(clave)]
+            return trozo[:1].lower() + trozo[1:]       # «Ganar dinero con IA» -> «ganar dinero con IA»
+    return ""
+
+
 def ajustar_metadatos(guion: Guion) -> Guion:
     """Frase clave, título y hashtags según las reglas de SEO del canal (no toca el guion)."""
+    if guion.titulo_propio and guion.titulo:            # tu título manda: la frase clave sale de él
+        guion.frase_clave = frase_clave_en(guion.titulo) or guion.frase_clave
     if not guion.frase_clave:
         guion.frase_clave = elegir_frase_clave(guion.tema)
     franquicia = bool(FRANQUICIA_RE.search(guion.tema))
@@ -545,7 +559,11 @@ def ajustar_metadatos(guion: Guion) -> Guion:
         guion.titulo = titulo
         titulo = ""
     elif not titulo:
-        titulo = recortar_titulo(f"{_capitalizar(guion.frase_clave)} 2026: {guion.tema}", 70)
+        tema_corto = re.split(r"[:,.;¿?]", guion.tema)[0].strip()
+        if guion.frase_clave.lower() in tema_corto.lower():
+            titulo = recortar_titulo(f"{_capitalizar(tema_corto)} 2026", 70)
+        else:
+            titulo = recortar_titulo(f"{_capitalizar(guion.frase_clave)} 2026: {tema_corto}", 70)
     if titulo:
         if franquicia and _ENGANOS_FRANQUICIA.search(titulo):
             titulo = f"{guion.frase_clave} 2026: la Franquicia IA sin humo, precio real"
@@ -1172,11 +1190,18 @@ def descripcion_final(guion: Guion, autores: set[str]) -> str:
     lineas = [ln.strip() for ln in guion.descripcion.strip().splitlines() if ln.strip()]
     clave = guion.frase_clave
     if clave:
-        clave_m = clave[:1].upper() + clave[1:]
         if not lineas or clave.lower() not in lineas[0].lower():
-            lineas.insert(0, f"{clave_m}: {guion.tema}, explicado sin humo y paso a paso.")
+            titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
+            if clave.lower() in titulo.lower():
+                base = titulo
+            elif clave.lower() in guion.tema.lower():
+                base = guion.tema
+            else:
+                base = f"{_capitalizar(clave)}: {guion.tema}"
+            lineas.insert(0, f"{_capitalizar(base).rstrip('.')}. Explicado sin humo y paso a paso.")
         if len(lineas) < 2 or clave.lower() not in lineas[1].lower():
-            lineas.insert(1, f"Si buscas {clave} con poco tiempo y solo tu celular, este video es para ti.")
+            lineas.insert(1, f"Más sobre {clave[:1].lower() + clave[1:]}: un paso concreto para hacer hoy, "
+                             "con poco tiempo y solo tu celular.")
     partes = ["\n".join(lineas), NOTA_TRANSPARENCIA]
     if autores:
         partes.append("Videos de fondo: Pixabay (" + ", ".join(sorted(autores)) + ").")
@@ -1186,7 +1211,8 @@ def descripcion_final(guion: Guion, autores: set[str]) -> str:
 
 
 _CONECTORES_FINALES = {"y", "o", "de", "del", "con", "para", "que", "la", "el", "los", "las", "en", "a", "sobre",
-                       "por", "un", "una", "qué", "cuánto", "cómo", "quién"}
+                       "por", "un", "una", "qué", "cuánto", "cómo", "como", "quién", "si", "tu", "tus", "mi", "sin",
+                       "al", "lo", "se", "te"}
 
 
 def recortar_titulo(titulo: str, limite: int) -> str:
