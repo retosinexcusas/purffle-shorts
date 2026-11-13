@@ -125,6 +125,34 @@ El resultado queda en `salida/<tema>/`: `short.mp4`, `titulo.txt`, `descripcion.
 2. Ve a *Actions → Generar Short en español → Run workflow*, escribe el **tema** y pulsa *Run workflow*.
 3. Al terminar, descarga el video desde la sección **Artifacts** de la ejecución (`short-<número>`). El resumen de la ejecución muestra el título, la descripción y el guion listos para copiar.
 
+### Un Short cada día, automático
+
+El workflow también se ejecuta solo cada día a las 6:17 a. m. de Colombia, con el **tema del día** de [`temas_shorts.txt`](temas_shorts.txt). Hay un tema por línea, la lista rota y al terminar vuelve a empezar. Edita ese archivo para cambiar los temas o su orden: está organizado por las etapas del recorrido de tu cliente. Al lanzarlo a mano, si dejas el tema vacío también se usa el tema del día.
+
+### Subida automática a YouTube (privado)
+
+El video puede subirse a tu canal con título, descripción, etiquetas, subtítulos en español y la marca de contenido sintético. Queda en **privado** para que lo revises y lo publiques desde YouTube Studio. YouTube deja en privado todo lo que suben los proyectos de Google Cloud que no han pasado su auditoría, así que este es el modo realista.
+
+Autorización, una sola vez y desde tu computador:
+
+1. En [Google Cloud Console](https://console.cloud.google.com/), crea un proyecto y activa **YouTube Data API v3**.
+2. En *Google Auth Platform → Audience*, configura la pantalla de consentimiento como *External* y pulsa **Publish app** (estado *In production*). Si la dejas en *Testing*, la autorización caduca a los 7 días.
+3. En *Clients*, crea un cliente OAuth de tipo **Desktop app** y descarga su JSON como `credentials.json` en la carpeta del repositorio.
+4. Ejecuta lo siguiente, inicia sesión con la cuenta de tu canal y acepta los permisos (Google avisará de que la app no está verificada: es tu propia app):
+
+   ```bash
+   pip install -e .
+   UPLOAD_CAPTIONS=true python -m purffle_shorts auth
+   ```
+
+5. Abre el `token.json` que se creó y pega **todo su contenido** en un secreto nuevo del repositorio llamado `YT_TOKEN_JSON`. No subas `token.json` ni `credentials.json` al repositorio.
+
+Uso:
+
+- **A mano:** en *Run workflow*, elige `privado` (u `oculto`) en **subir_youtube**.
+- **En la ejecución diaria:** crea la variable del repositorio `SUBIR_YOUTUBE` con el valor `privado` (*Settings → Secrets and variables → Actions → Variables*).
+- **En tu equipo:** `python -m purffle_shorts.short_es --tema "..." --subir privado`.
+
 ## Convierte videos largos en Shorts
 
 ```bash

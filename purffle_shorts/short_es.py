@@ -1125,6 +1125,58 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
     return video
 
 
+# ------------------------------------------------------------------------------------------ temas y YouTube
+def leer_temas(ruta: str | Path) -> list[str]:
+    """Una línea por tema; se ignoran las vacías y las que empiezan con #."""
+    lineas = Path(ruta).read_text(encoding="utf-8").splitlines()
+    return [ln.strip() for ln in lineas if ln.strip() and not ln.strip().startswith("#")]
+
+
+def tema_del_dia(ruta: str | Path, fecha=None) -> str:
+    """Rota por la lista un tema por día (sin guardar estado): al llegar al final vuelve a empezar."""
+    import datetime as dt
+    temas = leer_temas(ruta)
+    if not temas:
+        raise ValueError(f"{ruta} no tiene temas")
+    fecha = fecha or dt.date.today()
+    return temas[fecha.toordinal() % len(temas)]
+
+
+PRIVACIDADES = {"privado": "private", "oculto": "unlisted", "publico": "public", "público": "public"}
+CATEGORIA_EDUCACION = "27"
+
+
+def subir_a_youtube(carpeta: str | Path, privacidad: str = "privado") -> str:
+    """Sube short.mp4 con su título, descripción, etiquetas y subtítulos en español. Devuelve el ID del video.
+
+    Usa el token de `purffle-shorts auth` (YT_TOKEN_FILE). YouTube deja en privado lo que suben los proyectos de
+    Google Cloud no auditados, sea cual sea la privacidad pedida."""
+    from . import youtube
+    from .config import Settings
+    carpeta = Path(carpeta)
+    if privacidad not in PRIVACIDADES:
+        raise ValueError(f"privacidad «{privacidad}»: usa {', '.join(PRIVACIDADES)}")
+    s = Settings.from_env().with_overrides(privacy=PRIVACIDADES[privacidad], synthetic_media=True)
+    meta = json.loads((carpeta / "metadatos.json").read_text(encoding="utf-8"))
+    titulo = (carpeta / "titulo.txt").read_text(encoding="utf-8").strip()
+    descripcion = (carpeta / "descripcion.txt").read_text(encoding="utf-8").strip()
+    etiquetas = [h for h in meta.get("hashtags", []) if h][:15]
+    if meta.get("frase_clave"):
+        etiquetas.insert(0, meta["frase_clave"])
+    cuerpo = youtube.build_body(s, titulo, descripcion, etiquetas, CATEGORIA_EDUCACION, "es")
+    log.info("Subiendo a YouTube como %s: %s", privacidad, titulo)
+    respuesta = youtube.upload(s, carpeta / "short.mp4", cuerpo)
+    video_id = respuesta.get("id", "")
+    if not video_id:
+        raise RuntimeError(f"YouTube no devolvió un ID: {respuesta}")
+    youtube.upload_captions(s, video_id, carpeta / "subtitulos.srt", "es", "Español")
+    meta["youtube_id"] = video_id
+    meta["youtube_url"] = f"https://youtube.com/shorts/{video_id}"
+    (carpeta / "metadatos.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("Subido: %s (revísalo y publícalo desde YouTube Studio)", meta["youtube_url"])
+    return video_id
+
+
 def construir_parser() -> argparse.ArgumentParser:
     import os
     p = argparse.ArgumentParser(prog="short_es",
@@ -1139,6 +1191,12 @@ def construir_parser() -> argparse.ArgumentParser:
     p.add_argument("--wikipedia", action="store_true",
                    help="si el LLM falla, usar Wikipedia en español (guion enciclopédico, fuera del nicho)")
     p.add_argument("--conservar-temporales", action="store_true", help="no borrar la carpeta _temporal")
+    p.add_argument("--temas", metavar="ARCHIVO",
+                   help="sin --tema: usar el tema del día de este archivo (uno por línea, rota cada día)")
+    p.add_argument("--subir", choices=["no", *PRIVACIDADES], default="no",
+                   help="subir a YouTube al terminar (privado por defecto en proyectos no auditados)")
+    p.add_argument("--subir-carpeta", metavar="CARPETA",
+                   help="solo subir a YouTube un Short ya generado (la carpeta con short.mp4)")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -1152,7 +1210,21 @@ def main(argv: list[str] | None = None) -> int:
         pass
     args = construir_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
-    tema = args.tema or args.tema_pos
+    if args.subir_carpeta:
+        try:
+            subir_a_youtube(args.subir_carpeta, args.subir if args.subir != "no" else "privado")
+        except Exception as e:
+            log.error("Error al subir a YouTube: %s", e)
+            return 1
+        return 0
+    tema = (args.tema or args.tema_pos or "").strip()
+    if not tema and args.temas:
+        try:
+            tema = tema_del_dia(args.temas)
+        except (OSError, ValueError) as e:
+            log.error("No se pudo leer el archivo de temas: %s", e)
+            return 2
+        log.info("Tema del día (%s): %s", args.temas, tema)
     if not tema:
         print("Indica un tema, por ejemplo:  python -m purffle_shorts.short_es --tema \"los pulpos\"",
               file=sys.stderr)
@@ -1168,6 +1240,12 @@ def main(argv: list[str] | None = None) -> int:
             raise
         return 1
     print(video)
+    if args.subir != "no":
+        try:
+            subir_a_youtube(video.parent, args.subir)
+        except Exception as e:
+            log.error("El Short se generó, pero no se pudo subir a YouTube: %s", e)
+            return 1
     return 0
 
 

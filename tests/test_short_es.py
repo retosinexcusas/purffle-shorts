@@ -474,3 +474,81 @@ def test_guion_real_de_groq_sin_duplicados():
     assert g.titulo.startswith("Ganar dinero con IA") and "sin invertir" not in g.titulo
     # Al quitar las frases parciales queda más corto (~99 palabras, ~38 s): solo falta la duración ideal.
     assert [p for p in short_es.problemas_del_guion(g) if "palabras" not in p] == []
+
+
+# ------------------------------------------------------------------ temas del día y subida a YouTube
+def test_tema_del_dia_rota_y_salta_comentarios(tmp_path):
+    import datetime as dt
+    f = tmp_path / "temas.txt"
+    f.write_text("# comentario\n\nuno\ndos\n  # otro\ntres\n", encoding="utf-8")
+    assert short_es.leer_temas(f) == ["uno", "dos", "tres"]
+    dia = dt.date(2026, 11, 13)
+    vistos = [short_es.tema_del_dia(f, dia + dt.timedelta(days=n)) for n in range(6)]
+    assert sorted(vistos[:3]) == ["dos", "tres", "uno"] and vistos[3:] == vistos[:3]
+
+
+def test_el_archivo_de_temas_del_repo_es_valido():
+    from pathlib import Path
+    temas = short_es.leer_temas(Path(__file__).resolve().parents[1] / "temas_shorts.txt")
+    assert len(temas) >= 10
+    assert sum(bool(short_es.FRANQUICIA_RE.search(t)) for t in temas) == 1      # el producto, una vez por ciclo
+
+
+def test_cli_usa_el_tema_del_dia(tmp_path, monkeypatch):
+    f = tmp_path / "temas.txt"
+    f.write_text("tema único\n", encoding="utf-8")
+    usados = {}
+
+    def crear(tema, salida, **kw):
+        usados["tema"] = tema
+        return tmp_path / "x" / "short.mp4"
+    monkeypatch.setattr(short_es, "crear_short", crear)
+    assert short_es.main(["--tema", "", "--temas", str(f)]) == 0
+    assert usados["tema"] == "tema único"
+
+
+def _carpeta_generada(tmp_path):
+    c = tmp_path / "short"
+    c.mkdir()
+    (c / "short.mp4").write_bytes(b"mp4")
+    (c / "titulo.txt").write_text("Ganar dinero con IA 2026: tu primer paso #Shorts\n", encoding="utf-8")
+    (c / "descripcion.txt").write_text("Ganar dinero con IA...\n\n#shorts\n", encoding="utf-8")
+    (c / "subtitulos.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHola\n", encoding="utf-8")
+    (c / "metadatos.json").write_text(json.dumps({"tema": "t", "frase_clave": "ganar dinero con IA",
+                                                  "hashtags": ["ingresosextra", "emprendimiento"]}),
+                                      encoding="utf-8")
+    return c
+
+
+def test_subir_a_youtube_privado_con_subtitulos(tmp_path, monkeypatch):
+    from purffle_shorts import youtube
+    llamadas = {}
+
+    def upload(settings, video, body):
+        llamadas["body"], llamadas["video"] = body, video
+        return {"id": "abc123"}
+    monkeypatch.setattr(youtube, "upload", upload)
+    monkeypatch.setattr(youtube, "upload_captions",
+                        lambda s, vid, srt, lang, name="": llamadas.setdefault("subs", (vid, srt.name, lang)))
+    c = _carpeta_generada(tmp_path)
+    assert short_es.subir_a_youtube(c, "privado") == "abc123"
+    body = llamadas["body"]
+    assert body["status"]["privacyStatus"] == "private" and body["status"]["containsSyntheticMedia"] is True
+    assert body["snippet"]["title"].startswith("Ganar dinero con IA") and body["snippet"]["defaultLanguage"] == "es"
+    assert body["snippet"]["tags"][:2] == ["ganar dinero con IA", "ingresosextra"]
+    assert llamadas["subs"] == ("abc123", "subtitulos.srt", "es")
+    meta = json.loads((c / "metadatos.json").read_text(encoding="utf-8"))
+    assert meta["youtube_url"] == "https://youtube.com/shorts/abc123"
+
+
+def test_cli_subir_carpeta(tmp_path, monkeypatch):
+    pedido = {}
+    monkeypatch.setattr(short_es, "subir_a_youtube", lambda c, p: pedido.update(c=c, p=p) or "id")
+    assert short_es.main(["--subir-carpeta", str(tmp_path), "--subir", "oculto"]) == 0
+    assert pedido == {"c": str(tmp_path), "p": "oculto"}
+
+
+def test_subir_sin_autorizacion_falla_con_mensaje(tmp_path, monkeypatch):
+    monkeypatch.setenv("YT_TOKEN_FILE", str(tmp_path / "no-existe.json"))
+    c = _carpeta_generada(tmp_path)
+    assert short_es.main(["--subir-carpeta", str(c)]) == 1

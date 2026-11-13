@@ -1,12 +1,15 @@
 name: Generar Short en español
 
-# Se ejecuta a mano desde la pestaña "Actions" → "Generar Short en español" → "Run workflow".
+# A mano: pestaña "Actions" → "Generar Short en español" → "Run workflow".
+# Solo: cada día a las 6:17 a. m. de Colombia (11:17 UTC) con el tema del día de temas_shorts.txt.
 on:
+  schedule:
+    - cron: "17 11 * * *"
   workflow_dispatch:
     inputs:
       tema:
-        description: "Tema del Short (en español), p. ej. «los agujeros negros»"
-        required: true
+        description: "Tema del Short (en español). Vacío = el tema del día de temas_shorts.txt"
+        required: false
         type: string
       voz:
         description: "Voz de edge-tts"
@@ -26,6 +29,15 @@ on:
         required: false
         default: "+8%"
         type: string
+      subir_youtube:
+        description: "Subir a YouTube (necesita el secreto YT_TOKEN_JSON)"
+        required: false
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - privado
+          - oculto
 
 permissions:
   contents: read
@@ -37,9 +49,12 @@ jobs:
     timeout-minutes: 30
     env:
       # Los valores del formulario pasan por variables de entorno (nunca se interpolan en el script).
+      # En la ejecución programada no hay formulario: se usan los valores por defecto y la variable
+      # del repositorio SUBIR_YOUTUBE (no | privado | oculto).
       TEMA: ${{ inputs.tema }}
-      VOZ_ES: ${{ inputs.voz }}
-      VELOCIDAD_VOZ: ${{ inputs.velocidad }}
+      VOZ_ES: ${{ inputs.voz || 'es-MX-JorgeNeural' }}
+      VELOCIDAD_VOZ: ${{ inputs.velocidad || '+8%' }}
+      SUBIR_YOUTUBE: ${{ inputs.subir_youtube || vars.SUBIR_YOUTUBE || 'no' }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       # Opcionales (niveles gratuitos): si existen, un LLM escribe el guion; si no, se usa Wikipedia en español.
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -83,7 +98,7 @@ jobs:
           fi
 
       - name: Generar el Short
-        run: python -m purffle_shorts.short_es --tema "$TEMA" --salida salida
+        run: python -m purffle_shorts.short_es --tema "$TEMA" --temas temas_shorts.txt --salida salida
 
       - name: Resumen
         if: success()
@@ -93,7 +108,7 @@ jobs:
           {
             echo "## 🎬 Short generado"
             echo
-            echo "**Tema:** $TEMA"
+            echo "**Tema:** $(python -c "import json,sys; print(json.load(open(sys.argv[1]))['tema'])" "$carpeta/metadatos.json")"
             echo
             echo "**Duración:** $(python -c "import json,sys; print(json.load(open(sys.argv[1]))['duracion_segundos'])" "$carpeta/metadatos.json") s"
             echo
@@ -125,3 +140,25 @@ jobs:
             ${{ env.carpeta }}/metadatos.json
           if-no-files-found: error
           retention-days: 14
+
+      - name: Subir a YouTube
+        if: success() && env.SUBIR_YOUTUBE != 'no'
+        env:
+          YT_TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
+        run: |
+          if [ -z "$YT_TOKEN_JSON" ]; then
+            echo "::warning::Para subir a YouTube falta el secreto YT_TOKEN_JSON (ver README.es.md). El video está en Artifacts."
+            exit 0
+          fi
+          export YT_TOKEN_FILE="$RUNNER_TEMP/token.json"
+          printf '%s' "$YT_TOKEN_JSON" > "$YT_TOKEN_FILE"
+          chmod 600 "$YT_TOKEN_FILE"
+          python -m purffle_shorts.short_es --subir-carpeta "$carpeta" --subir "$SUBIR_YOUTUBE"
+          url=$(python -c "import json,sys; print(json.load(open(sys.argv[1])).get('youtube_url',''))" "$carpeta/metadatos.json")
+          {
+            echo
+            echo "### YouTube"
+            echo "Subido como **$SUBIR_YOUTUBE**: $url"
+            echo "Revísalo y publícalo desde YouTube Studio."
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$YT_TOKEN_FILE"
