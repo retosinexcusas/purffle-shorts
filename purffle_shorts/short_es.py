@@ -220,13 +220,14 @@ class Guion:
 
 # --- Cliente ideal y reglas del canal ---------------------------------------------------------------
 # Búsquedas reales de YouTube (sugerencias del buscador desde Colombia, 11/11/2026).
-PALABRAS_CLAVE_SEO = [
-    "ingresos extra desde casa", "ingresos extra 2026", "generar ingresos extras por internet",
-    "ganar dinero con IA", "ganar dinero con IA 2026", "como ganar dinero con IA sin invertir",
-    "emprender sin dinero", "emprender sin dinero 2026", "emprender desde casa sin dinero",
-    "como emprender sin dejar de trabajar", "trabajar desde casa por internet colombia",
-    "ingresos pasivos con IA", "productos digitales como empezar", "como vender en instagram desde cero",
-    "como conseguir clientes para mi negocio", "productos digitales con IA", "gurus de internet",
+PALABRAS_CLAVE_SEO = [   # las primeras _PALABRAS_CLAVE_PROMPT se le ofrecen al modelo
+    "ingresos extra desde casa", "ganar dinero con IA", "emprender sin dinero",
+    "como ganar dinero con IA sin invertir", "como emprender sin dejar de trabajar",
+    "trabajar desde casa por internet colombia", "productos digitales como empezar",
+    "como vender en instagram desde cero", "como conseguir clientes para mi negocio", "gurus de internet",
+    "ingresos extra 2026", "generar ingresos extras por internet", "ganar dinero con IA 2026",
+    "emprender sin dinero 2026", "emprender desde casa sin dinero", "ingresos pasivos con IA",
+    "productos digitales con IA",
 ]
 HASHTAGS_BASE = ["ingresosextra", "emprendimiento", "emprendedores", "ganardineroconia", "emprendersindinero",
                  "emprendedoradigital", "productosdigitales", "ingresospasivos", "emprendersinmiedo"]
@@ -243,87 +244,74 @@ PROMESAS_PROHIBIDAS = re.compile(
     r"\b(?:hazte rico|hacerte rico|volverte rico|dinero f[aá]cil|riqueza r[aá]pida|garantizad[oa]s?|"
     r"garantiza|sin esfuerzo|lamborghini|ferrari|yate|mansi[oó]n|millonario en)\b", re.I)
 
-SISTEMA_LLM = """Eres guionista de YouTube Shorts para un canal de emprendimiento digital "antihumo" en español \
-latinoamericano (con naturalidad colombiana, sin modismos forzados). Escribes EXCLUSIVAMENTE en español; solo el \
-campo 'busqueda_en' va en inglés. Respondes solo con JSON válido.
+SISTEMA_LLM = """Eres guionista de YouTube Shorts de un canal antihumo de emprendimiento digital. Escribes solo \
+en español latinoamericano natural (con cercanía colombiana); únicamente 'busqueda_en' va en inglés. Respondes solo \
+con JSON válido.
 
-A QUIÉN LE HABLAS (cliente ideal, siempre en segunda persona: "tú"):
-- Adulto latinoamericano, sobre todo de Colombia, de 25 a 45 años. Empleado con un sueldo que no alcanza o \
-independiente con ingresos inestables; quizá ya intentó vender por internet sin resultados.
-- Tiene celular, redes y ganas, pero no tiene método, audiencia ni producto. Solo dispone de 1 a 2 horas al día \
-(de noche o fines de semana) y usa solo su celular. Se autofinancia: cada peso le pesa.
-- Le duele que su ingreso no alcanza ni depende de él. Siente que va tarde, tiene miedo a fracasar y vergüenza \
-de mostrarse; está agotado, pero sigue con esperanza.
-- Teme que lo estafen los gurús de lujos falsos y de "millonario en 30 días". Ya pagó cursos que no le sirvieron.
-- Anhela un ingreso propio, pequeño pero constante y predecible, control de su tiempo, trabajar desde casa, y \
-que su familia vea que sí funcionó. No busca ser millonario: busca dejar de depender.
-- Su ciclo de abandono: consume tutoriales sin orden, salta de idea en idea, compra un curso con promesa grande, \
-no ve resultados rápidos, pierde la confianza y abandona. Tu contenido corta ese ciclo: orden antes de comprar y \
-resultados pequeños y medibles antes de rendirse.
+AUDIENCIA (háblale siempre de "tú"): adulto de Latinoamérica, sobre todo Colombia, de 25 a 45 años, con sueldo que \
+no alcanza o ingresos inestables. Tiene 1 a 2 horas al día, solo su celular y poco dinero. Ya perdió plata en \
+cursos y teme a los gurús de lujos falsos. No quiere ser millonario: quiere un ingreso digital propio, pequeño y \
+constante, con un método paso a paso.
 
-TONO Y ESTILO (obligatorio):
-- Cercano, directo, honesto y antihumo. Habla de "tú" y del resultado del espectador, nunca de tus logros.
-- PROHIBIDO prometer riqueza rápida, ingresos garantizados o "dinero fácil", y mencionar o mostrar lujos \
-(carros, viajes, mansiones). Nada de cifras de ganancias inventadas.
-- Si usas un dato, usa solo estos (cita la fuente de forma natural, sin URL):
-  * En Colombia, el 48 % de los ocupados gana menos de un salario mínimo (DANE).
-  * La informalidad laboral cerró 2025 en 55,7 % en Colombia (Portafolio).
-  * El 86,6 % de los emprendedores colombianos empieza por necesidad (GEM).
-  * En 2024, el 47 % de quienes veían oportunidades no emprendía por miedo a fracasar (GEM).
-  * Solo el 33,5 % de las empresas colombianas sigue operando a los cinco años (Confecámaras).
-  * En Latinoamérica, el 43 % de quienes estudian online sufrió un incidente digital en el último año (Kaspersky).
-- Frases cortas, fáciles de leer en voz alta. Escribe los montos con palabras que se lean bien ("97 dólares").
+REGLAS DE TONO:
+- Cercano, directo, honesto. El protagonista es el espectador y su resultado, no tú.
+- PROHIBIDO prometer riqueza rápida, ingresos garantizados o "dinero fácil", y mencionar lujos (carros, viajes).
+- No inventes cifras. Si usas un dato, elige uno de estos: 48 % de los ocupados en Colombia gana menos de un \
+salario mínimo (DANE); 47 % no emprende por miedo a fracasar (GEM 2024); solo 33,5 % de las empresas colombianas \
+llega a cinco años (Confecámaras).
+- Frases cortas para leer en voz alta. Montos en palabras ("97 dólares").
 """
+
+_PALABRAS_CLAVE_PROMPT = 10       # cuántas búsquedas reales se le ofrecen al modelo
 
 
 def _bloque_franquicia(tema: str) -> str:
     if not FRANQUICIA_RE.search(tema):
         return ""
     return """
-TRANSPARENCIA COMERCIAL (el tema menciona la Franquicia IA; es obligatorio, en una o dos frases del desarrollo):
-- Di que cuesta 97 dólares y que enseña embudos, pauta y automatización con inteligencia artificial.
-- Di que se gana el 50 % de comisión, unos 48,50 dólares, por cada venta referida con el propio enlace.
-- Di explícitamente que sin ventas no hay ingresos (y que la pauta pagada, si se usa, es un gasto aparte).
-- Aclara explícitamente que tú (el creador) ganas una comisión si la persona entra con tu enlace.
-- No presentes casos de éxito de la marca como resultados típicos ni prometas ingresos.
+OBLIGATORIO porque el tema es la Franquicia IA. En una o dos frases del desarrollo di, con estas cifras exactas:
+cuesta 97 dólares; enseña embudos, pauta y automatización con IA; se gana el 50 %, unos 48,50 dólares, por cada \
+venta con el propio enlace; sin ventas no hay ingresos; y tú (el creador) ganas una comisión si entran con tu enlace.
 """
 
 
+_EJEMPLO_LLM = """{"frase_clave": "ingresos extra desde casa",
+ "titulo": "Ingresos extra desde casa 2026: tu primer paso con 1 hora al día",
+ "descripcion": "Ingresos extra desde casa sin humo: un paso que haces hoy.\\nSi buscas ingresos extra desde casa \
+con poco tiempo, empieza aquí.",
+ "hashtags": ["ingresosextra", "emprendimiento", "emprendedores", "trabajardesdecasa", "emprendersinmiedo"],
+ "frases": [
+  {"texto": "Si tienes una hora al día y solo tu celular, haz esto primero.", "busqueda_en": "person smartphone night"},
+  {"texto": "...desarrollo: un obstáculo real y un paso concreto...", "busqueda_en": "notebook planning desk"},
+  {"texto": "Si quieres el mapa paso a paso con IA, sin humo ni promesas falsas, revisa el enlace de mi perfil.",
+   "busqueda_en": "person smiling phone"}]}"""
+
+
 def _prompt_llm(tema: str, problemas: list[str] | None = None) -> str:
-    claves = ", ".join(f"«{c}»" for c in PALABRAS_CLAVE_SEO)
+    claves = ", ".join(f"«{c}»" for c in PALABRAS_CLAVE_SEO[:_PALABRAS_CLAVE_PROMPT])
     correccion = ""
     if problemas:
-        correccion = "\nTU VERSIÓN ANTERIOR NO CUMPLÍA ESTO; corrígelo:\n" + "\n".join(f"- {p}" for p in problemas)
-    return f"""Escribe el guion de un YouTube Short vertical sobre: «{tema}».
-Si el tema es general, conéctalo con el objetivo del espectador (un ingreso digital propio, paso a paso) sin forzarlo.
+        correccion = "\nCORRIGE ESTO DE TU VERSIÓN ANTERIOR:\n" + "\n".join(f"- {p}" for p in problemas) + "\n"
+    return f"""TEMA: «{tema}». Responde exactamente lo que el tema promete.
 
-ESTRUCTURA (45 a 55 segundos; entre {PALABRAS_OBJETIVO[0]} y {PALABRAS_OBJETIVO[1]} palabras en total; 6 a 9 frases):
-1. Gancho (0-3 s): la primera frase, de 6 a 14 palabras. Usa uno de estos patrones probados:
-   - Restricción que baja la barrera: "Solo con tu celular…", "Si tienes 1 hora al día…", "Si ganas el mínimo…".
-   - "Si yo tuviera que empezar hoy desde cero…" (un plan que el espectador puede copiar).
-   - "La dura verdad sobre…".
-   - Herramienta + resultado realista (sin cifras infladas).
-2. Desarrollo (3-45 s): ataca UN obstáculo real (falta de tiempo, exceso de tutoriales sin orden, miedo a perder \
-dinero o a la estafa, no saber de tecnología) y entrega UN paso accionable para hoy, una comparación clara o \
-herramientas gratuitas concretas.
-3. Cierre y llamado a la acción (últimos 8 s): la última frase, de 15 a 22 palabras, invita al siguiente paso sin \
-presión ni urgencia falsa. Usa una variante natural de: "{CTA_POR_DEFECTO}" Debe mencionar el enlace de tu perfil.
+GUION: {PALABRAS_OBJETIVO[0]} a {PALABRAS_OBJETIVO[1]} palabras en total (45 a 55 segundos), 6 a 8 frases.
+1. Gancho (0-3 s), 6 a 14 palabras, con uno de estos patrones: "Solo con tu celular…", "Si tienes 1 hora al día…", \
+"Si yo tuviera que empezar hoy…", "La dura verdad sobre…" o herramienta + resultado realista.
+2. Desarrollo: UN obstáculo real (poco tiempo, tutoriales sin orden, miedo a perder dinero o a la estafa) y UN paso \
+que pueda hacer hoy, una comparación clara o una herramienta gratuita concreta.
+3. Cierre (últimos 8 s), 15 a 22 palabras, sin presión: variante natural de "{CTA_POR_DEFECTO}" Debe mencionar el \
+enlace de mi perfil.
 {_bloque_franquicia(tema)}
-SEO PARA YOUTUBE SHORTS (todo en español):
-- 'frase_clave': elige la búsqueda real que mejor encaje con el tema, copiada tal cual de esta lista: {claves}.
-- 'titulo': máximo 70 caracteres, EMPIEZA con la frase_clave (puedes añadir "2026" o "Colombia"), habla de "tú" \
-y de su resultado, sin clickbait de lujos ni promesas. No incluyas "#Shorts" (se añade solo).
-- 'descripcion': 2 o 3 líneas separadas por saltos de línea. La frase_clave debe aparecer en la línea 1 y repetirse \
-en la línea 2. No incluyas la nota de afiliados ni hashtags (se añaden solos).
-- 'hashtags': 5 a 8, sin el símbolo #, en minúsculas y sin espacios; combina generales (emprendimiento, \
-emprendedores, ingresosextra, ganardineroconia, emprendersindinero) con uno específico del tema.
-- 'busqueda_en': para cada frase, 2 a 4 palabras EN INGLÉS que describan una toma de video de stock filmable \
-(p. ej. "person using smartphone night", "laptop notebook planning", "home office desk"). Nada de lujos.
-- Sin emojis, hashtags, acotaciones ni etiquetas como "Narrador:" dentro de 'texto'.
+SEO:
+- frase_clave: copia tal cual la búsqueda que mejor encaje: {claves}.
+- titulo: máximo 70 caracteres, empieza con la frase_clave; puedes añadir "2026" o "Colombia".
+- descripcion: 2 líneas; la frase_clave va en la línea 1 y se repite en la línea 2.
+- hashtags: 5 a 8, minúsculas, sin "#".
+- busqueda_en: 2 a 4 palabras en inglés de una toma de stock filmable, sin lujos.
+- Sin emojis, hashtags ni etiquetas tipo "Narrador:" dentro de 'texto'. No añadas "#Shorts" ni nota de afiliados.
 {correccion}
-Formato JSON:
-{{"frase_clave": "...", "titulo": "...", "descripcion": "...", "hashtags": ["..."],
-  "frases": [{{"texto": "...", "busqueda_en": "..."}}]}}"""
+EJEMPLO DEL FORMATO (no copies su contenido, solo la forma):
+{_EJEMPLO_LLM}"""
 
 
 ESQUEMA_LLM = {
@@ -457,6 +445,12 @@ def ajustar_a_reglas(guion: Guion) -> Guion:
                 f.fija = True
     guion.frases[0].fija = True
     guion.frases[-1].fija = True
+    if guion.fuente == "plantilla":            # la plantilla es genérica: se recorta antes de acelerar la voz
+        while contar_palabras(guion.texto) > PALABRAS_OBJETIVO[1]:
+            prescindibles = [i for i in range(1, len(guion.frases) - 1) if not guion.frases[i].fija]
+            if not prescindibles:
+                break
+            guion.frases.pop(prescindibles[-1])
     titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
     if guion.frase_clave.lower() not in titulo.lower():
         clave = guion.frase_clave[:1].upper() + guion.frase_clave[1:]
@@ -576,8 +570,8 @@ def guion_plantilla(tema: str) -> Guion:
     clave_titulo = clave[:1].upper() + clave[1:]
     return Guion(
         tema=tema,
-        titulo=truncate_words(f"{clave_titulo} 2026: paso a paso y sin humo" if clave in tema.lower()
-                              else f"{clave_titulo} 2026: {tema}, paso a paso", 70),
+        titulo=recortar_titulo(f"{clave_titulo} 2026: paso a paso y sin humo" if clave in tema.lower()
+                               else f"{clave_titulo} 2026: {re.split(r'[:,.;¿?]', tema)[0].strip()}, sin humo", 70),
         descripcion=(f"{clave_titulo}: un paso concreto sobre {tema}, sin humo y solo con tu celular.\n"
                      f"Si buscas {clave} con 1 hora al día, empieza por aquí."),
         hashtags=["ingresosextra", "emprendimiento", "emprendedores", "emprendersindinero"],
@@ -1001,9 +995,23 @@ def descripcion_final(guion: Guion, autores: set[str]) -> str:
     return "\n\n".join(p for p in partes if p)
 
 
+_CONECTORES_FINALES = {"y", "o", "de", "del", "con", "para", "que", "la", "el", "los", "las", "en", "a", "sobre",
+                       "por", "un", "una", "qué", "cuánto", "cómo", "quién"}
+
+
+def recortar_titulo(titulo: str, limite: int) -> str:
+    """Recorta en una palabra completa y sin dejar un conector colgando ("…cuánto cuesta y")."""
+    if len(titulo) <= limite:
+        return titulo
+    palabras = truncate_words(titulo, limite).split()
+    while len(palabras) > 1 and (palabras[-1].lower().strip(",:;") in _CONECTORES_FINALES):
+        palabras.pop()
+    return " ".join(palabras).rstrip(" ,:;-")
+
+
 def titulo_final(guion: Guion) -> str:
     titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
-    return truncate_words(titulo, 90) + " #Shorts"
+    return recortar_titulo(titulo, 90) + " #Shorts"
 
 
 def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = VOZ_POR_DEFECTO,

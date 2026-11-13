@@ -305,7 +305,7 @@ def test_prompt_incluye_cliente_ideal_y_reglas():
     prompt = short_es._prompt_llm("cómo empezar con 1 hora al día")
     for texto in ("Gancho (0-3 s)", "Si yo tuviera que", "La dura verdad sobre", "últimos 8 s",
                   "enlace de mi perfil", "«ingresos extra desde casa»", "«ganar dinero con IA»",
-                  "«emprender sin dinero»", "2026", "línea 1 y repetirse"):
+                  "«emprender sin dinero»", "2026", "línea 1 y se repite en la línea 2", "EJEMPLO DEL FORMATO"):
         assert texto in prompt
     assert "Franquicia IA" not in prompt                        # sin bloque comercial si el tema no lo pide
 
@@ -376,3 +376,22 @@ def test_recorte_respeta_frases_fijas(tmp_path, monkeypatch):
     obligatorias = [f.texto for f in g.frases if f.fija]
     short_es.locucion_bajo_60s(g, tmp_path, "es-MX-JorgeNeural", "+0%")
     assert all(t in [f.texto for f in g.frases] for t in obligatorias)
+
+
+def test_prompt_es_corto():
+    """Un prompt corto y con ejemplo se sigue mejor: sistema + usuario por debajo de 4.500 caracteres."""
+    for tema in ("cómo empezar con 1 hora al día", "la Franquicia IA"):
+        assert len(short_es.SISTEMA_LLM) + len(short_es._prompt_llm(tema)) < 4500
+
+
+def test_titulo_no_termina_en_conector():
+    assert short_es.recortar_titulo("Ganar dinero con IA 2026: la Franquicia IA: qué es, cuánto cuesta y para "
+                                    "quién no es ni nunca será para todos", 70) == \
+        "Ganar dinero con IA 2026: la Franquicia IA: qué es, cuánto cuesta"
+
+
+def test_plantilla_franquicia_cabe_en_el_rango():
+    g = short_es.ajustar_a_reglas(short_es.guion_plantilla("la Franquicia IA: qué es, cuánto cuesta y para quién no es"))
+    assert short_es.contar_palabras(g.texto) <= short_es.PALABRAS_OBJETIVO[1]
+    assert short_es._menciona_transparencia(g.texto) and "enlace de mi perfil" in g.frases[-1].texto
+    assert short_es.titulo_final(g) == "Ganar dinero con IA 2026: la Franquicia IA, sin humo #Shorts"
