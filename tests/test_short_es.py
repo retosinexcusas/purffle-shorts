@@ -552,3 +552,96 @@ def test_subir_sin_autorizacion_falla_con_mensaje(tmp_path, monkeypatch):
     monkeypatch.setenv("YT_TOKEN_FILE", str(tmp_path / "no-existe.json"))
     c = _carpeta_generada(tmp_path)
     assert short_es.main(["--subir-carpeta", str(c)]) == 1
+
+
+# ------------------------------------------------------------------ guion propio
+GUION_PROPIO = """# comentario
+Tema: ingresos extra desde casa
+Título: Mi título exacto
+Si tienes una hora al día, empieza por aquí.
+El error es saltar de tutorial en tutorial. Termina uno antes de empezar otro.
+Revisa el enlace de mi perfil si quieres el mapa completo."""
+
+
+def test_leer_guion_con_cabeceras_y_separadores():
+    tema, titulo, frases = short_es.leer_guion(GUION_PROPIO)
+    assert tema == "ingresos extra desde casa" and titulo == "Mi título exacto"
+    assert frases == ["Si tienes una hora al día, empieza por aquí.", "El error es saltar de tutorial en tutorial.",
+                      "Termina uno antes de empezar otro.",
+                      "Revisa el enlace de mi perfil si quieres el mapa completo."]
+    assert short_es.leer_guion("Uno dos | tres cuatro")[2] == ["Uno dos", "tres cuatro"]
+
+
+def test_guion_propio_no_se_modifica_y_respeta_el_titulo():
+    g = short_es.guion_desde_texto(GUION_PROPIO, usar_llm=False)
+    assert [f.texto for f in g.frases] == short_es.leer_guion(GUION_PROPIO)[2]
+    assert all(f.fija for f in g.frases) and g.fuente == "propio"
+    assert g.titulo == "Mi título exacto" and short_es.titulo_final(g) == "Mi título exacto #Shorts"
+    assert all(f.busqueda_en and f.busqueda_en.isascii() for f in g.frases)
+    d = short_es.descripcion_final(g, set())
+    assert short_es.NOTA_TRANSPARENCIA in d and g.frase_clave.lower() in d.splitlines()[0].lower()
+
+
+def test_guion_propio_franquicia_no_agrega_nada_pero_avisa(caplog):
+    texto = "Tema: la Franquicia IA\nLa Franquicia IA te enseña a vender.\nRevisa el enlace de mi perfil."
+    with caplog.at_level("WARNING", logger="purffle.short_es"):
+        g = short_es.guion_desde_texto(texto, usar_llm=False)
+    assert [f.texto for f in g.frases] == ["La Franquicia IA te enseña a vender.", "Revisa el enlace de mi perfil."]
+    assert "Falta la transparencia" in caplog.text and "no se cambió" in caplog.text
+    assert g.titulo.startswith("Ganar dinero con IA 2026")                       # título creado por el sistema
+
+
+def test_guion_propio_usa_metadatos_del_llm(monkeypatch):
+    class LLMFalso:
+        def complete_json(self, sistema, prompt, **kw):
+            assert "NO se cambia" in prompt and "1. Si tienes" in prompt
+            return {"frase_clave": "ingresos extra desde casa", "titulo": "Ingresos extra desde casa: tu paso",
+                    "descripcion": "Ingresos extra desde casa hoy.\nSi buscas ingresos extra desde casa, mira.",
+                    "hashtags": ["ingresosextra"], "busquedas": ["phone night", "notebook", "desk", "smile"]}
+    monkeypatch.setattr(short_es, "_crear_llm", lambda: LLMFalso())
+    g = short_es.guion_desde_texto(GUION_PROPIO.replace("Título: Mi título exacto\n", ""))
+    assert g.titulo == "Ingresos extra desde casa: tu paso"
+    assert [f.busqueda_en for f in g.frases] == ["phone night", "notebook", "desk", "smile"]
+    assert g.frases[0].texto == "Si tienes una hora al día, empieza por aquí."
+
+
+def test_guion_propio_vacio_falla():
+    with pytest.raises(ValueError):
+        short_es.guion_desde_texto("# solo comentarios\nTema: algo", usar_llm=False)
+
+
+@needs_ffmpeg
+def test_guion_propio_largo_se_acelera_pero_no_se_recorta(tmp_path, monkeypatch):
+    monkeypatch.setattr(short_es, "_edge_frase", _voz_falsa(0.62))
+    texto = "\n".join(["Una frase de prueba con bastantes palabras para alargar el guion del video."] * 9)
+    g = short_es.guion_desde_texto(texto, usar_llm=False)
+    loc = short_es.locucion_bajo_60s(g, tmp_path, "es-MX-JorgeNeural", "+0%")
+    assert len(g.frases) == 9 and loc.duracion <= short_es.DURACION_MAXIMA
+
+
+@needs_ffmpeg
+def test_guion_propio_demasiado_largo_da_un_error_claro(tmp_path, monkeypatch):
+    monkeypatch.setattr(short_es, "_edge_frase", _voz_falsa(0.62))
+    texto = "\n".join(["Una frase de prueba con bastantes palabras para alargar el guion del video."] * 14)
+    g = short_es.guion_desde_texto(texto, usar_llm=False)
+    with pytest.raises(RuntimeError, match="acorta el guion"):
+        short_es.locucion_bajo_60s(g, tmp_path, "es-MX-JorgeNeural", "+0%")
+
+
+def test_cli_guion_archivo_y_texto(tmp_path, monkeypatch):
+    usados = []
+    monkeypatch.setattr(short_es, "crear_short",
+                        lambda tema, salida, **kw: usados.append((tema, kw["guion_propio"])) or tmp_path / "s.mp4")
+    f = tmp_path / "g.txt"
+    f.write_text("Hola mundo de prueba.", encoding="utf-8")
+    assert short_es.main(["--guion", str(f)]) == 0
+    assert short_es.main(["--guion-texto", "Uno dos | tres cuatro", "--tema", "mi tema"]) == 0
+    assert usados == [("", "Hola mundo de prueba."), ("mi tema", "Uno dos | tres cuatro")]
+
+
+def test_el_guion_de_ejemplo_del_repo_es_valido():
+    from pathlib import Path
+    texto = (Path(__file__).resolve().parents[1] / "guiones" / "ejemplo.txt").read_text(encoding="utf-8")
+    g = short_es.guion_desde_texto(texto, usar_llm=False)
+    assert short_es.problemas_del_guion(g) == [] or all("palabras" in p for p in short_es.problemas_del_guion(g))
+    assert short_es.contar_palabras(g.texto) <= short_es.PALABRAS_OBJETIVO[1]

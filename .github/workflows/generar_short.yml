@@ -11,6 +11,14 @@ on:
         description: "Tema del Short (en español). Vacío = el tema del día de temas_shorts.txt"
         required: false
         type: string
+      guion_archivo:
+        description: "Tu guion (se respeta tal cual): ruta en el repo, p. ej. guiones/ejemplo.txt"
+        required: false
+        type: string
+      guion:
+        description: "O pega tu guion aquí, con las frases separadas por |"
+        required: false
+        type: string
       voz:
         description: "Voz de edge-tts"
         required: false
@@ -52,6 +60,8 @@ jobs:
       # En la ejecución programada no hay formulario: se usan los valores por defecto y la variable
       # del repositorio SUBIR_YOUTUBE (no | privado | oculto).
       TEMA: ${{ inputs.tema }}
+      GUION_ARCHIVO: ${{ inputs.guion_archivo }}
+      GUION: ${{ inputs.guion }}
       VOZ_ES: ${{ inputs.voz || 'es-MX-JorgeNeural' }}
       VELOCIDAD_VOZ: ${{ inputs.velocidad || '+8%' }}
       SUBIR_YOUTUBE: ${{ inputs.subir_youtube || vars.SUBIR_YOUTUBE || 'no' }}
@@ -98,7 +108,14 @@ jobs:
           fi
 
       - name: Generar el Short
-        run: python -m purffle_shorts.short_es --tema "$TEMA" --temas temas_shorts.txt --salida salida
+        run: |
+          if [ -n "$GUION_ARCHIVO" ]; then
+            python -m purffle_shorts.short_es --tema "$TEMA" --guion "$GUION_ARCHIVO" --salida salida
+          elif [ -n "$GUION" ]; then
+            python -m purffle_shorts.short_es --tema "$TEMA" --guion-texto "$GUION" --salida salida
+          else
+            python -m purffle_shorts.short_es --tema "$TEMA" --temas temas_shorts.txt --salida salida
+          fi
 
       - name: Resumen
         if: success()

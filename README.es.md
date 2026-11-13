@@ -125,6 +125,31 @@ El resultado queda en `salida/<tema>/`: `short.mp4`, `titulo.txt`, `descripcion.
 2. Ve a *Actions → Generar Short en español → Run workflow*, escribe el **tema** y pulsa *Run workflow*.
 3. Al terminar, descarga el video desde la sección **Artifacts** de la ejecución (`short-<número>`). El resumen de la ejecución muestra el título, la descripción y el guion listos para copiar.
 
+### Tu propio guion (el sistema no lo cambia)
+
+Si prefieres escribir el guion tú, el sistema usa tu texto palabra por palabra para la voz y los subtítulos. Lo demás lo hace él: elige los clips, crea el título (si no lo escribes), la descripción con la frase clave y la nota de afiliados, los hashtags y la subida a YouTube.
+
+Formato, igual que en [`guiones/ejemplo.txt`](guiones/ejemplo.txt):
+
+```text
+Tema: ingresos extra desde casa con poco tiempo      ← opcional: ayuda a elegir la frase clave y los clips
+Título: Mi título exacto                             ← opcional: si lo pones, se usa tal cual
+Si tienes una hora al día y solo tu celular, empieza por aquí.
+El error más común es saltar de tutorial en tutorial sin terminar ninguno.
+…
+Si quieres el mapa paso a paso, sin humo ni promesas falsas, revisa el enlace de mi perfil.
+```
+
+- **Una frase por línea**, y como máximo unas 140 palabras: un Short debe durar menos de 60 s. Si se pasa un poco, la voz se acelera (hasta +35 %). Si aun así no cabe, el workflow falla con un mensaje para que lo acortes; nunca borra frases tuyas.
+- El sistema **no añade nada a tu texto**. Si falta algo que piden las reglas del canal (por ejemplo, la transparencia de la Franquicia IA o el llamado a la acción), lo verás como aviso en el log y en `metadatos.json` (`reglas_pendientes`) del artifact.
+
+Cómo usarlo:
+
+- **Desde GitHub (cómodo para editar):** crea un archivo en `guiones/` (*Add file → Create new file*, p. ej. `guiones/mi-video.txt`), y en *Run workflow* escribe esa ruta en **guion_archivo**.
+- **Rápido:** pega el guion en el campo **guion**, con las frases separadas por `|`.
+- **En tu equipo:** `python -m purffle_shorts.short_es --guion guiones/mi-video.txt`.
+- **Para corregir uno de la IA:** copia el `guion.txt` del artifact a `guiones/`, edítalo y genera de nuevo con **guion_archivo**.
+
 ### Un Short cada día, automático
 
 El workflow también se ejecuta solo cada día a las 6:17 a. m. de Colombia, con el **tema del día** de [`temas_shorts.txt`](temas_shorts.txt). Hay un tema por línea, la lista rota y al terminar vuelve a empezar. Edita ese archivo para cambiar los temas o su orden: está organizado por las etapas del recorrido de tu cliente. Al lanzarlo a mano, si dejas el tema vacío también se usa el tema del día.
