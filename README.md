@@ -470,7 +470,7 @@ Set `LLM_PROVIDER` and `LLM_MODEL` in `.env`, or pass `--provider` / `--model`. 
 |---|---|---|---|
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` (GPT-5 / o-series supported) |
 | Anthropic Claude | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` (structured JSON output) |
-| Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-3.8-flash` |
 | Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini`, or any of its hundreds of models |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |

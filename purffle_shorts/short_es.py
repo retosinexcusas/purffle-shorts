@@ -11,8 +11,8 @@ Variables de entorno:
     PIXABAY_API_KEY   clave gratuita de https://pixabay.com/api/docs/ (clips de fondo)
     VOZ_ES            voz de edge-tts (por defecto es-MX-JorgeNeural)
     VELOCIDAD_VOZ     velocidad de la voz, p. ej. +10% (por defecto +8%)
-    GEMINI_API_KEY / GROQ_API_KEY   opcionales (niveles gratuitos): un LLM escribe un guion más pulido.
-                      Sin ellas el guion se arma con Wikipedia en español (gratis, sin clave).
+    GEMINI_API_KEY / GROQ_API_KEY   opcionales (niveles gratuitos): un LLM escribe el guion para el cliente
+                      ideal del canal (ver SISTEMA_LLM). Sin ellas se usa una plantilla antihumo del canal.
 
 Todo el texto que ve el público (guion, título, descripción y subtítulos) se genera en español. Solo las
 búsquedas en Pixabay se hacen en inglés, porque ahí sus resultados son mucho mejores.
@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import ffmpeg
-from .utils import clean_narration, download, http, slugify, truncate_words, with_retries
+from .utils import clean_narration, http, slugify, truncate_words, with_retries
 
 log = logging.getLogger("purffle.short_es")
 
@@ -43,7 +43,7 @@ DURACION_MAXIMA = 58.5          # margen bajo los 60 s que YouTube exige a un Sh
 VOZ_POR_DEFECTO = "es-MX-JorgeNeural"
 VELOCIDAD_POR_DEFECTO = "+8%"
 VELOCIDAD_MAXIMA = 35           # % — más rápido ya no se entiende bien
-PALABRAS_OBJETIVO = (95, 135)   # ~40-55 s de locución
+PALABRAS_OBJETIVO = (115, 140)  # ~45-55 s de locución con es-MX-JorgeNeural a +8 %
 MAX_SEGUNDOS_POR_TOMA = 5.0     # las frases largas se cubren con varios clips (ritmo de Short)
 PALABRAS_POR_SUBTITULO = 3
 
@@ -140,6 +140,8 @@ def _traducir_diccionario(texto: str) -> str:
 
 
 _CACHE_TRADUCCION: dict[str, str] = {}
+STOPWORDS_EN = set("the a an of and or to in on for with about you your is are was were its it this that "
+                   "these those their they we our my know learned new".split())
 
 
 def traducir_al_ingles(texto: str) -> str:
@@ -165,11 +167,40 @@ def traducir_al_ingles(texto: str) -> str:
     return resultado
 
 
+_PLURALES_IRREGULARES = {"people": "person", "children": "child", "men": "man", "women": "woman", "mice": "mouse",
+                         "teeth": "tooth", "feet": "foot", "geese": "goose", "fish": "fish", "species": "species",
+                         "series": "series", "news": "news", "physics": "physics", "mathematics": "mathematics"}
+
+
+def singular_en(texto: str) -> str:
+    """Pixabay etiqueta en singular: "octopuses limbs" -> "octopus limb"."""
+    def una(w: str) -> str:
+        if w in _PLURALES_IRREGULARES:
+            return _PLURALES_IRREGULARES[w]
+        if len(w) <= 3 or w.endswith(("ss", "us", "is", "ous")):
+            return w
+        if w.endswith("ies"):
+            return w[:-3] + "y"
+        if w.endswith(("ses", "xes", "ches", "shes", "zes")):
+            return w[:-2]
+        if w.endswith("s"):
+            return w[:-1]
+        return w
+    return " ".join(una(w) for w in texto.split())
+
+
+def consulta_tema(tema: str) -> str:
+    """El tema en inglés, en singular y sin artículos: «los pulpos» -> "octopus"."""
+    palabras = [w for w in traducir_al_ingles(tema).split() if w not in STOPWORDS_EN]
+    return singular_en(" ".join(palabras[:3])) or sin_acentos(tema.lower())
+
+
 # ------------------------------------------------------------------------------------------ guion
 @dataclass
 class Frase:
     texto: str
     busqueda_en: str = ""        # consulta en inglés para Pixabay (interna)
+    fija: bool = False           # no se recorta al ajustar la duración (gancho, transparencia, cierre)
 
 
 @dataclass
@@ -180,15 +211,118 @@ class Guion:
     hashtags: list[str]
     frases: list[Frase]
     fuente: str = "plantilla"    # llm | wikipedia | plantilla
+    frase_clave: str = ""        # búsqueda real de YouTube que encabeza el título y la descripción
+    titulo_propio: bool = False  # el autor escribió el título: se respeta tal cual
 
     @property
     def texto(self) -> str:
         return " ".join(f.texto for f in self.frases)
 
 
+# --- Cliente ideal y reglas del canal ---------------------------------------------------------------
+# Búsquedas reales de YouTube (sugerencias del buscador desde Colombia, 11/11/2026).
+PALABRAS_CLAVE_SEO = [   # las primeras _PALABRAS_CLAVE_PROMPT se le ofrecen al modelo
+    "ingresos extra desde casa", "ganar dinero con IA", "emprender sin dinero",
+    "como ganar dinero con IA sin invertir", "como emprender sin dejar de trabajar",
+    "trabajar desde casa por internet colombia", "productos digitales como empezar",
+    "como vender en instagram desde cero", "como conseguir clientes para mi negocio", "gurus de internet",
+    "ingresos extra 2026", "generar ingresos extras por internet", "ganar dinero con IA 2026",
+    "emprender sin dinero 2026", "emprender desde casa sin dinero", "ingresos pasivos con IA",
+    "productos digitales con IA", "como ser constante en redes sociales",
+    "como vender en instagram con pocos seguidores",
+]
+HASHTAGS_BASE = ["ingresosextra", "emprendimiento", "emprendedores", "ganardineroconia", "emprendersindinero",
+                 "emprendedoradigital", "productosdigitales", "ingresospasivos", "emprendersinmiedo"]
+FRANQUICIA_RE = re.compile(r"franquicia\s+(?:de\s+)?(?:ia|i\.\s*a\.?|inteligencia\s+artificial)\b", re.I)
+CTA_POR_DEFECTO = ("Si quieres el mapa paso a paso con inteligencia artificial, sin humo ni promesas falsas, "
+                   "revisa el enlace de mi perfil.")
+FRASE_TRANSPARENCIA_FRANQUICIA = (
+    "Te lo digo claro: la Franquicia IA cuesta 97 dólares, enseña embudos, pauta y automatización con IA, "
+    "ganas el 50 por ciento, unos 48,50 dólares, por cada venta con tu enlace, sin ventas no hay ingresos, "
+    "y yo gano una comisión si entras con el mío.")
+NOTA_TRANSPARENCIA = ("Transparencia: en este canal comparto herramientas gratuitas y enlaces de afiliado. Si compras "
+                      "a través de ellos, puedo ganar una comisión sin costo extra para ti.")
+PROMESAS_PROHIBIDAS = re.compile(
+    r"\b(?:hazte rico|hacerte rico|volverte rico|dinero f[aá]cil|riqueza r[aá]pida|garantizad[oa]s?|"
+    r"garantiza|sin esfuerzo|lamborghini|ferrari|yate|mansi[oó]n|millonario en)\b", re.I)
+
+SISTEMA_LLM = """Eres guionista de YouTube Shorts de un canal antihumo de emprendimiento digital. Escribes solo \
+en español latinoamericano natural (con cercanía colombiana); únicamente 'busqueda_en' va en inglés. Respondes solo \
+con JSON válido.
+
+AUDIENCIA (háblale siempre de "tú"): adulto de Latinoamérica, sobre todo Colombia, de 25 a 45 años, con sueldo que \
+no alcanza o ingresos inestables. Tiene 1 a 2 horas al día, solo su celular y poco dinero. Ya perdió plata en \
+cursos y teme a los gurús de lujos falsos. No quiere ser millonario: quiere un ingreso digital propio, pequeño y \
+constante, con un método paso a paso.
+
+REGLAS DE TONO:
+- Cercano, directo, honesto. El protagonista es el espectador y su resultado, no tú.
+- PROHIBIDO prometer riqueza rápida, ingresos garantizados o "dinero fácil", y mencionar lujos (carros, viajes).
+- No inventes cifras. Si usas un dato, elige uno de estos: 48 % de los ocupados en Colombia gana menos de un \
+salario mínimo (DANE); 47 % no emprende por miedo a fracasar (GEM 2024); solo 33,5 % de las empresas colombianas \
+llega a cinco años (Confecámaras).
+- Frases cortas para leer en voz alta. Montos en palabras ("97 dólares").
+"""
+
+_PALABRAS_CLAVE_PROMPT = 10       # cuántas búsquedas reales se le ofrecen al modelo
+
+
+def _bloque_franquicia(tema: str) -> str:
+    if not FRANQUICIA_RE.search(tema):
+        return ""
+    return f"""
+OBLIGATORIO porque el tema es la Franquicia IA:
+- Incluye en el desarrollo, casi literal, esta frase: "{FRASE_TRANSPARENCIA_FRANQUICIA}"
+  (cuesta 97 dólares; 50 %, unos 48,50 dólares, por venta con tu enlace; sin ventas no hay ingresos; y tú, el \
+creador, ganas una comisión si entran con tu enlace).
+- No digas "sin invertir", "gratis" ni "sin dinero" sobre la franquicia: cuesta 97 dólares.
+- Si el tema lo pide, di también para quién NO es (p. ej. quien busca dinero rápido o no puede dedicar tiempo a vender).
+"""
+
+
+_EJEMPLO_LLM = """{"frase_clave": "ingresos extra desde casa",
+ "titulo": "Ingresos extra desde casa 2026: tu primer paso con 1 hora al día",
+ "descripcion": "Ingresos extra desde casa sin humo: un paso que haces hoy.\\nSi buscas ingresos extra desde casa \
+con poco tiempo, empieza aquí.",
+ "hashtags": ["ingresosextra", "emprendimiento", "emprendedores", "trabajardesdecasa", "emprendersinmiedo"],
+ "frases": [
+  {"texto": "Si tienes una hora al día y solo tu celular, haz esto primero.", "busqueda_en": "person smartphone night"},
+  {"texto": "...desarrollo: un obstáculo real y un paso concreto...", "busqueda_en": "notebook planning desk"},
+  {"texto": "Si quieres el mapa paso a paso con IA, sin humo ni promesas falsas, revisa el enlace de mi perfil.",
+   "busqueda_en": "person smiling phone"}]}"""
+
+
+def _prompt_llm(tema: str, problemas: list[str] | None = None) -> str:
+    claves = ", ".join(f"«{c}»" for c in PALABRAS_CLAVE_SEO[:_PALABRAS_CLAVE_PROMPT])
+    correccion = ""
+    if problemas:
+        correccion = "\nCORRIGE ESTO DE TU VERSIÓN ANTERIOR:\n" + "\n".join(f"- {p}" for p in problemas) + "\n"
+    return f"""TEMA: «{tema}». Responde exactamente lo que el tema promete.
+
+GUION: {PALABRAS_OBJETIVO[0]} a {PALABRAS_OBJETIVO[1]} palabras en total (45 a 55 segundos), 6 a 8 frases.
+1. Gancho (0-3 s), 6 a 14 palabras, con uno de estos patrones: "Solo con tu celular…", "Si tienes 1 hora al día…", \
+"Si yo tuviera que empezar hoy…", "La dura verdad sobre…" o herramienta + resultado realista.
+2. Desarrollo: UN obstáculo real (poco tiempo, tutoriales sin orden, miedo a perder dinero o a la estafa) y UN paso \
+que pueda hacer hoy, una comparación clara o una herramienta gratuita concreta.
+3. Cierre (últimos 8 s), 15 a 22 palabras, sin presión: variante natural de "{CTA_POR_DEFECTO}" Debe mencionar el \
+enlace de mi perfil.
+{_bloque_franquicia(tema)}
+SEO:
+- frase_clave: copia tal cual la búsqueda que mejor encaje: {claves}.
+- titulo: máximo 70 caracteres, empieza con la frase_clave; puedes añadir "2026" o "Colombia".
+- descripcion: 2 líneas; la frase_clave va en la línea 1 y se repite en la línea 2.
+- hashtags: 5 a 8, minúsculas, sin "#".
+- busqueda_en: 2 a 4 palabras en inglés de una toma de stock filmable, sin lujos.
+- Sin emojis, hashtags ni etiquetas tipo "Narrador:" dentro de 'texto'. No añadas "#Shorts" ni nota de afiliados.
+{correccion}
+EJEMPLO DEL FORMATO (no copies su contenido, solo la forma):
+{_EJEMPLO_LLM}"""
+
+
 ESQUEMA_LLM = {
     "type": "object",
     "properties": {
+        "frase_clave": {"type": "string"},
         "titulo": {"type": "string"},
         "descripcion": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
@@ -197,52 +331,41 @@ ESQUEMA_LLM = {
             "properties": {"texto": {"type": "string"}, "busqueda_en": {"type": "string"}},
             "required": ["texto", "busqueda_en"], "additionalProperties": False}},
     },
-    "required": ["titulo", "descripcion", "hashtags", "frases"],
+    "required": ["frase_clave", "titulo", "descripcion", "hashtags", "frases"],
     "additionalProperties": False,
 }
 
-SISTEMA_LLM = (
-    "Eres guionista de YouTube Shorts para un canal hispanohablante. Escribes EXCLUSIVAMENTE en español "
-    "neutro (latinoamericano), con frases cortas, datos concretos y verificables, y un tono enérgico. "
-    "Nunca escribas en inglés salvo en el campo 'busqueda_en'. Responde solo con JSON válido."
-)
+
+def _menciona_transparencia(texto: str) -> bool:
+    t = sin_acentos(texto.lower())
+    return "97" in t and "48" in t and "comision" in t and ("sin ventas" in t or "no hay ingreso" in t)
 
 
-def _prompt_llm(tema: str) -> str:
-    return f"""Escribe el guion de un YouTube Short vertical sobre: «{tema}».
+def problemas_del_guion(guion: Guion) -> list[str]:
+    """Reglas del canal que el guion no cumple (se le devuelven al LLM para que corrija)."""
+    problemas = []
+    n = contar_palabras(guion.texto)
+    if not PALABRAS_OBJETIVO[0] <= n <= PALABRAS_OBJETIVO[1]:
+        problemas.append(f"El guion tiene {n} palabras; debe tener entre {PALABRAS_OBJETIVO[0]} y "
+                         f"{PALABRAS_OBJETIVO[1]} (45 a 55 segundos).")
+    if PROMESAS_PROHIBIDAS.search(guion.texto + " " + guion.titulo):
+        problemas.append("Promete riqueza, ingresos garantizados o menciona lujos: está prohibido.")
+    cierre = sin_acentos(guion.frases[-1].texto.lower()) if guion.frases else ""
+    if "enlace" not in cierre and "perfil" not in cierre:
+        problemas.append("La última frase debe invitar, sin presión, a revisar el enlace del perfil.")
+    if FRANQUICIA_RE.search(guion.tema) and not _menciona_transparencia(guion.texto):
+        problemas.append("Falta la transparencia de la Franquicia IA: 97 dólares, 50 % de comisión (48,50 dólares) "
+                         "por venta, sin ventas no hay ingresos y que tú ganas comisión con tu enlace.")
+    if FRANQUICIA_RE.search(guion.tema) and re.search(r"\b(?:sin invertir|gratis|sin dinero|sin costo)\b",
+                                                      guion.titulo, re.I):
+        problemas.append("El título no puede decir «sin invertir», «gratis» ni «sin dinero»: la Franquicia IA "
+                         "cuesta 97 dólares.")
+    if guion.frase_clave and not guion.titulo.lower().startswith(guion.frase_clave.lower()):
+        problemas.append(f"El título debe empezar con la frase clave «{guion.frase_clave}».")
+    return problemas
 
-Reglas:
-- Entre {PALABRAS_OBJETIVO[0]} y {PALABRAS_OBJETIVO[1]} palabras en total (debe durar menos de 55 segundos leído).
-- 6 a 9 frases. La primera es un gancho potente (pregunta o dato sorprendente) de menos de 15 palabras.
-- La última frase invita a seguir el canal, en español.
-- Sin emojis, sin hashtags, sin acotaciones ni etiquetas como "Narrador:" dentro de 'texto'.
-- Todo en español: 'titulo' (máximo 70 caracteres, llamativo), 'descripcion' (2 o 3 frases),
-  'hashtags' (5 a 8, en español, sin el símbolo #).
-- 'busqueda_en': 2 a 4 palabras EN INGLÉS que describan una toma de video de stock para esa frase
-  (objetos o escenas filmables, p. ej. "black hole space", "ocean waves sunset").
 
-Formato JSON:
-{{"titulo": "...", "descripcion": "...", "hashtags": ["..."],
-  "frases": [{{"texto": "...", "busqueda_en": "..."}}]}}"""
-
-
-def guion_con_llm(tema: str) -> Guion | None:
-    """Usa el LLM configurado (p. ej. el nivel gratuito de Gemini o Groq) si hay alguna clave."""
-    try:
-        from .config import Settings
-        from .llm import LLM, LLMError, available_providers
-        settings = Settings.from_env()
-        if not available_providers(settings) and not settings.llm_base_url and settings.llm_provider == "auto":
-            return None
-        llm = LLM(settings)
-        data = llm.complete_json(SISTEMA_LLM, _prompt_llm(tema), schema=ESQUEMA_LLM, max_tokens=2000,
-                                 temperature=0.8)
-    except LLMError as e:
-        log.warning("El LLM no respondió (%s); uso Wikipedia en español.", e)
-        return None
-    except Exception as e:
-        log.warning("No se pudo usar el LLM (%s); uso Wikipedia en español.", e)
-        return None
+def _guion_desde_json(tema: str, data: dict) -> Guion | None:
     frases = []
     for f in data.get("frases") or []:
         if isinstance(f, dict):
@@ -254,28 +377,249 @@ def guion_con_llm(tema: str) -> Guion | None:
     hashtags = [re.sub(r"[^\wáéíóúüñ]", "", str(h).lower().lstrip("#")) for h in data.get("hashtags") or []]
     return Guion(tema=tema, titulo=str(data.get("titulo") or tema).strip(),
                  descripcion=str(data.get("descripcion") or "").strip(),
-                 hashtags=[h for h in hashtags if h][:8], frases=frases, fuente="llm")
+                 hashtags=[h for h in hashtags if h][:8], frases=frases, fuente="llm",
+                 frase_clave=str(data.get("frase_clave") or "").strip())
+
+
+# Preferencias para elegir un modelo de chat de Groq entre los que la cuenta tiene disponibles.
+_PREFERENCIA_GROQ = ("llama-3.3-70b", "llama-4-maverick", "gpt-oss-120b", "kimi-k2", "llama-4", "qwen",
+                     "llama", "gpt-oss")
+_NO_CHAT = ("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "prompt-guard", "compound")
+
+
+def elegir_modelo_groq(modelos: list[str]) -> str | None:
+    candidatos = [m for m in modelos if not any(x in m.lower() for x in _NO_CHAT)]
+    for preferido in _PREFERENCIA_GROQ:
+        for m in candidatos:
+            if preferido in m.lower():
+                return m
+    return candidatos[0] if candidatos else None
+
+
+def _configurar_modelo_groq() -> None:
+    """Groq retira modelos a menudo: si no se fijó GROQ_MODEL, se elige uno que la cuenta tenga disponible."""
+    import os
+    clave = os.getenv("GROQ_API_KEY", "").strip()
+    if not clave or os.getenv("GROQ_MODEL", "").strip():
+        return
+    try:
+        r = http().get("https://api.groq.com/openai/v1/models", timeout=15,
+                       headers={"Authorization": f"Bearer {clave}"})
+        r.raise_for_status()
+        modelos = [m["id"] for m in r.json().get("data", []) if m.get("id") and m.get("active", True)]
+    except Exception as e:
+        log.warning("No se pudo consultar la lista de modelos de Groq: %s", e)
+        return
+    elegido = elegir_modelo_groq(modelos)
+    if elegido:
+        os.environ["GROQ_MODEL"] = elegido
+        log.info("Modelo de Groq: %s", elegido)
+
+
+def _crear_llm():
+    """El LLM configurado (Gemini, con Groq de respaldo) o None si no hay ninguna clave."""
+    try:
+        from .config import Settings
+        from .llm import LLM, available_providers
+        settings = Settings.from_env()
+        if not available_providers(settings) and not settings.llm_base_url and settings.llm_provider == "auto":
+            return None
+        _configurar_modelo_groq()
+        return LLM(settings)
+    except Exception as e:
+        log.warning("No se pudo preparar el LLM (%s).", e)
+        return None
+
+
+def _pedir_json(llm, sistema: str, prompt: str, esquema: dict) -> dict | None:
+    """Dos intentos (Gemini responde 503 cuando está saturado); None si el LLM no responde."""
+    import time
+
+    from .llm import LLMError
+    for intento in range(2):
+        try:
+            return llm.complete_json(sistema, prompt, schema=esquema, max_tokens=8000, temperature=0.8)
+        except LLMError as e:
+            log.warning("El LLM no respondió (intento %d/2): %s", intento + 1, str(e)[:200])
+            if intento < 1:
+                time.sleep(20)
+    return None
+
+
+def guion_con_llm(tema: str) -> Guion | None:
+    """Usa el LLM configurado (p. ej. el nivel gratuito de Gemini o Groq) si hay alguna clave.
+
+    Si el guion incumple alguna regla del canal, se le pide una corrección una vez; lo que siga faltando lo
+    arregla ``ajustar_a_reglas`` (CTA, transparencia, título)."""
+    llm = _crear_llm()
+    if llm is None:
+        return None
+    guion, problemas = None, None
+    for _ronda in range(2):
+        data = _pedir_json(llm, SISTEMA_LLM, _prompt_llm(tema, problemas), ESQUEMA_LLM)
+        if data is None:
+            break
+        nuevo = _guion_desde_json(tema, data)
+        if nuevo:
+            guion = nuevo
+            problemas = problemas_del_guion(guion)
+            if not problemas:
+                break
+            log.info("El guion incumple %d regla(s); pido una corrección: %s", len(problemas), " | ".join(problemas))
+    if guion is None:
+        log.warning("El LLM no dio un guion válido; uso la plantilla del canal.")
+    return guion
+
+
+def elegir_frase_clave(tema: str) -> str:
+    t = sin_acentos(tema.lower())
+    if re.search(r"\b(ia|inteligencia artificial|chatgpt|gemini|claude)\b", t):
+        return "ganar dinero con IA"
+    if "sin dinero" in t or "sin invertir" in t:
+        return "emprender sin dinero"
+    if "instagram" in t:
+        return "como vender en instagram desde cero"
+    if "producto" in t:
+        return "productos digitales como empezar"
+    if "cliente" in t:
+        return "como conseguir clientes para mi negocio"
+    return "ingresos extra desde casa"
+
+
+_ENGANOS_FRANQUICIA = re.compile(r"\b(?:sin invertir|gratis|gratuit[oa]|sin dinero|sin costo)\b", re.I)
+
+
+def _es_cta(texto: str) -> bool:
+    t = sin_acentos(texto.lower())
+    return "enlace" in t and "perfil" in t
+
+
+def _menciona_precio_o_comision(texto: str) -> bool:
+    t = sin_acentos(texto.lower())
+    return "97" in t or "48" in t or "comision" in t or "sin ventas" in t
+
+
+def _capitalizar(texto: str) -> str:
+    return texto[:1].upper() + texto[1:]
+
+
+def ajustar_a_reglas(guion: Guion) -> Guion:
+    """Garantiza lo que no puede quedar a criterio del LLM: cierre con CTA, transparencia comercial, duración y
+    SEO. Reemplaza en lugar de añadir, para no duplicar el precio ni el llamado a la acción."""
+    if not guion.frase_clave:
+        guion.frase_clave = elegir_frase_clave(guion.tema)
+    frases = guion.frases
+    # 1. Un solo CTA y siempre al final; lo que el modelo puso después del CTA sobra.
+    ctas = [i for i, f in enumerate(frases) if _es_cta(f.texto)]
+    if ctas:
+        cta = frases[ctas[-1]]
+        frases = [f for i, f in enumerate(frases[:ctas[-1]]) if i not in ctas] + [cta]
+    else:
+        frases.append(Frase(CTA_POR_DEFECTO, "person smiling smartphone"))
+    # 2. Transparencia de la Franquicia IA: si está incompleta, la frase fija sustituye a las parciales.
+    franquicia = bool(FRANQUICIA_RE.search(guion.tema))
+    if franquicia and not _menciona_transparencia(" ".join(f.texto for f in frases)):
+        cuerpo = [f for f in frases[1:-1] if not _menciona_precio_o_comision(f.texto)]
+        frases = [frases[0], *cuerpo, Frase(FRASE_TRANSPARENCIA_FRANQUICIA, "laptop online course"), frases[-1]]
+    if franquicia:
+        for f in frases:
+            f.fija = f.fija or _menciona_precio_o_comision(f.texto)
+    frases[0].fija = frases[-1].fija = True
+    # 3. Duración: se quitan frases del desarrollo (las últimas primero) hasta caber en el rango.
+    while contar_palabras(" ".join(f.texto for f in frases)) > PALABRAS_OBJETIVO[1]:
+        prescindibles = [i for i in range(1, len(frases) - 1) if not frases[i].fija]
+        if not prescindibles:
+            break
+        frases.pop(prescindibles[-1])
+    guion.frases = frases
+    return ajustar_metadatos(guion)
+
+
+def frase_clave_en(titulo: str) -> str:
+    """La búsqueda real de PALABRAS_CLAVE_SEO que contiene el título, con sus tildes ("gurús de internet")."""
+    plano = sin_acentos(titulo.lower())
+    for clave in sorted(PALABRAS_CLAVE_SEO, key=len, reverse=True):
+        i = plano.find(sin_acentos(clave.lower()))
+        if i >= 0:
+            trozo = titulo[i:i + len(clave)]
+            return trozo[:1].lower() + trozo[1:]       # «Ganar dinero con IA» -> «ganar dinero con IA»
+    return ""
+
+
+def ajustar_metadatos(guion: Guion) -> Guion:
+    """Frase clave, título y hashtags según las reglas de SEO del canal (no toca el guion)."""
+    if guion.titulo_propio and guion.titulo:            # tu título manda: la frase clave sale de él
+        guion.frase_clave = frase_clave_en(guion.titulo) or guion.frase_clave
+    if not guion.frase_clave:
+        guion.frase_clave = elegir_frase_clave(guion.tema)
+    franquicia = bool(FRANQUICIA_RE.search(guion.tema))
+    # Título: frase clave al inicio, en mayúscula, y nada de "sin invertir" sobre algo que cuesta 97 dólares.
+    titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
+    if guion.titulo_propio and titulo:
+        guion.titulo = titulo
+        titulo = ""
+    elif not titulo:
+        tema_corto = re.split(r"[:,.;¿?]", guion.tema)[0].strip()
+        if guion.frase_clave.lower() in tema_corto.lower():
+            titulo = recortar_titulo(f"{_capitalizar(tema_corto)} 2026", 70)
+        else:
+            titulo = recortar_titulo(f"{_capitalizar(guion.frase_clave)} 2026: {tema_corto}", 70)
+    if titulo:
+        if franquicia and _ENGANOS_FRANQUICIA.search(titulo):
+            titulo = f"{guion.frase_clave} 2026: la Franquicia IA sin humo, precio real"
+        if guion.frase_clave.lower() not in titulo.lower():
+            titulo = f"{_capitalizar(guion.frase_clave)}: {titulo}"
+        guion.titulo = _capitalizar(titulo)
+    vistos = []
+    for h in [*guion.hashtags, *HASHTAGS_BASE]:
+        if h and h not in vistos:
+            vistos.append(h)
+    guion.hashtags = vistos[:8]
+    return guion
+
+
+ARTICULOS_ES = ("el", "la", "los", "las", "un", "una", "unos", "unas", "lo")
+
+
+def _titulos_candidatos(tema: str) -> list[str]:
+    """«los pulpos» -> ["Los pulpos", "Pulpos", "Pulpo"]: Wikipedia titula sus artículos en singular."""
+    palabras = tema.strip().split()
+    while len(palabras) > 1 and palabras[0].lower() in ARTICULOS_ES:
+        palabras = palabras[1:]
+    nucleo = " ".join(palabras)
+    candidatos = [tema.strip(), nucleo]
+    ultima = palabras[-1] if palabras else ""
+    if ultima.lower().endswith("s") and len(ultima) > 3:
+        candidatos.append(" ".join(palabras[:-1] + [ultima[:-1]]))
+    return [c[:1].upper() + c[1:] for c in dict.fromkeys(candidatos) if c]
+
+
+def _paginas_wikipedia(params: dict) -> list[dict]:
+    r = http().get("https://es.wikipedia.org/w/api.php", timeout=20, params={
+        "action": "query", "prop": "extracts|pageprops", "ppprop": "disambiguation", "explaintext": 1,
+        "exchars": 3500, "redirects": 1, "format": "json", "formatversion": 2, **params})
+    r.raise_for_status()
+    paginas = sorted(r.json().get("query", {}).get("pages", []), key=lambda p: p.get("index", 0))
+    return [p for p in paginas if not p.get("missing") and "disambiguation" not in (p.get("pageprops") or {})
+            and len(p.get("extract") or "") > 200]
 
 
 def _wikipedia_extracto(tema: str) -> tuple[str, str] | None:
-    api = "https://es.wikipedia.org/w/api.php"
-    r = http().get(api, timeout=20, params={"action": "query", "list": "search", "srsearch": tema,
-                                            "srlimit": 1, "format": "json"})
-    r.raise_for_status()
-    hits = r.json().get("query", {}).get("search", [])
-    if not hits:
-        return None
-    titulo = hits[0]["title"]
-    r = http().get(api, timeout=20, params={"action": "query", "prop": "extracts", "exintro": 1,
-                                            "explaintext": 1, "redirects": 1, "titles": titulo,
-                                            "format": "json"})
-    r.raise_for_status()
-    paginas = r.json().get("query", {}).get("pages", {})
-    texto = next(iter(paginas.values()), {}).get("extract", "") if paginas else ""
-    return (titulo, texto) if texto else None
+    """Primero busca un artículo con el título exacto (o en singular); si no existe, usa el buscador."""
+    candidatos = _titulos_candidatos(tema)
+    # Del más específico al más literal: «Pulpo» antes que «Los pulpos» (que podría ser un grupo musical).
+    for titulo in reversed(candidatos):
+        for pagina in _paginas_wikipedia({"titles": titulo}):
+            return pagina["title"], pagina["extract"]
+    nucleo = candidatos[1] if len(candidatos) > 1 else candidatos[0]
+    for pagina in _paginas_wikipedia({"generator": "search", "gsrsearch": nucleo, "gsrlimit": 3}):
+        return pagina["title"], pagina["extract"]
+    return None
 
 
 def _limpiar_wikipedia(texto: str) -> str:
+    texto = re.split(r"\n=+\s*(?:Referencias|Véase también|Notas|Bibliografía|Enlaces externos)", texto)[0]
+    texto = re.sub(r"^=+.*?=+\s*$", " ", texto, flags=re.M)     # títulos de sección
     texto = re.sub(r"\([^()]*\)", "", texto)          # pronunciaciones, fechas entre paréntesis
     texto = re.sub(r"\[[^\]]*\]", "", texto)
     texto = re.sub(r"\s+([,.;:])", r"\1", texto)
@@ -322,33 +666,146 @@ def guion_con_wikipedia(tema: str) -> Guion | None:
 
 
 def guion_plantilla(tema: str) -> Guion:
-    """Último recurso sin red: un guion genérico pero coherente, siempre en español."""
+    """Sin LLM: un guion antihumo genérico para el cliente ideal, siempre en español."""
     frases = [
-        f"¿Alguna vez te has detenido a pensar en {tema}?",
-        f"Parece algo sencillo, pero {tema} esconde más de lo que imaginas.",
-        "Detrás de cada detalle hay años de historia, ciencia y curiosidad humana.",
-        "Muchas de las cosas que damos por hechas empezaron como una pregunta como esta.",
-        f"Y lo más interesante es que todavía se sigue descubriendo algo nuevo sobre {tema}.",
-        "La próxima vez que lo veas, recuerda que siempre hay una historia que contar.",
-        "Sígueme para más datos curiosos como este.",
+        (f"Si tienes solo una hora al día y tu celular, escucha esto sobre {tema}.", "person using smartphone night"),
+        ("El problema casi nunca es la falta de talento, es saltar de tutorial en tutorial sin orden.",
+         "tired person laptop"),
+        ("Por eso hoy no vas a comprar nada: vas a escoger un solo camino y un solo paso.", "notebook planning desk"),
+        ("Abre las notas de tu celular y escribe qué sabes hacer y quién te ha pagado por eso.",
+         "writing notes smartphone"),
+        ("Con eso defines una oferta pequeña que puedes probar esta semana con herramientas gratis.",
+         "small business online"),
+        ("Tu meta no es un millón, es lograr tu primer resultado pequeño y medible.", "checklist goal"),
+        ("Y desconfía de quien te muestre carros y viajes en lugar de un proceso claro.", "thinking person doubt"),
+        (CTA_POR_DEFECTO, "person smiling smartphone"),
     ]
-    return Guion(tema=tema, titulo=truncate_words(f"Lo que no sabías sobre {tema}", 70),
-                 descripcion=f"Un minuto para mirar {tema} con otros ojos.",
-                 hashtags=["curiosidades", "datoscuriosos", "sabiasque", "shortsenespañol"],
-                 frases=[Frase(f) for f in frases], fuente="plantilla")
+    clave = elegir_frase_clave(tema)
+    clave_titulo = clave[:1].upper() + clave[1:]
+    return Guion(
+        tema=tema,
+        titulo=recortar_titulo(f"{clave_titulo} 2026: paso a paso y sin humo" if clave in tema.lower()
+                               else f"{clave_titulo} 2026: {re.split(r'[:,.;¿?]', tema)[0].strip()}, sin humo", 70),
+        descripcion=(f"{clave_titulo}: un paso concreto sobre {tema}, sin humo y solo con tu celular.\n"
+                     f"Si buscas {clave} con 1 hora al día, empieza por aquí."),
+        hashtags=["ingresosextra", "emprendimiento", "emprendedores", "emprendersindinero"],
+        frases=[Frase(t, q) for t, q in frases], fuente="plantilla", frase_clave=clave)
 
 
-def generar_guion(tema: str, usar_llm: bool = True) -> Guion:
-    guion = (guion_con_llm(tema) if usar_llm else None) or guion_con_wikipedia(tema) or guion_plantilla(tema)
+def generar_guion(tema: str, usar_llm: bool = True, usar_wikipedia: bool = False) -> Guion:
+    """LLM (con las reglas del canal) -> Wikipedia (solo si se pide; da guiones enciclopédicos) -> plantilla."""
+    guion = ((guion_con_llm(tema) if usar_llm else None)
+             or (guion_con_wikipedia(tema) if usar_wikipedia else None)
+             or guion_plantilla(tema))
+    guion = ajustar_a_reglas(guion)
     log.info("Guion generado (%s): %d frases, %d palabras.", guion.fuente, len(guion.frases),
              contar_palabras(guion.texto))
-    tema_en = traducir_al_ingles(tema)
-    for frase in guion.frases:
+    return completar_busquedas(guion)
+
+
+def completar_busquedas(guion: Guion) -> Guion:
+    """Consulta en inglés para Pixabay en cada frase que no la tenga."""
+    tema = guion.tema
+    tema_en = consulta_tema(tema)
+    ultima = len(guion.frases) - 1
+    for i, frase in enumerate(guion.frases):
         busqueda = frase.busqueda_en.strip()
-        if not busqueda or re.search(r"[áéíóúñ¿¡]", busqueda, re.I):   # vacía o aún en español
-            clave = " ".join(palabras_clave(frase.texto, 2))
-            busqueda = traducir_al_ingles(clave) if clave else ""
-        frase.busqueda_en = busqueda or tema_en
+        if busqueda and not re.search(r"[áéíóúñ¿¡]", busqueda, re.I):
+            continue                                    # el LLM ya dio una buena consulta en inglés
+        frase.busqueda_en = tema_en
+        if 0 < i < ultima:                              # el gancho y el cierre muestran el tema
+            clave = next((p for p in palabras_clave(frase.texto, 3)
+                          if sin_acentos(p) not in sin_acentos(tema.lower())), "")
+            extra = traducir_al_ingles(clave) if clave else ""
+            extra = " ".join(w for w in extra.split() if w not in STOPWORDS_EN and w not in tema_en.split())
+            if extra:
+                frase.busqueda_en = f"{tema_en} {singular_en(extra.split()[0])}"
+    return guion
+
+
+# --- Guion propio: el autor escribe el texto; el sistema solo hace el video y los metadatos ----------------
+_CABECERA = re.compile(r"^(t[íi]tulo|tema)\s*:\s*(.+)$", re.I)
+
+
+def leer_guion(texto: str) -> tuple[str, str, list[str]]:
+    """Formato: una frase por línea (o separadas por «|»). Opcionales: «Tema: …» y «Título: …». Las líneas
+    que empiezan con # se ignoran. Devuelve (tema, título, frases)."""
+    tema = titulo = ""
+    frases: list[str] = []
+    for parte in re.split(r"\n|\|", texto.replace("\r", "")):
+        linea = parte.strip()
+        if not linea or linea.startswith("#"):
+            continue
+        m = _CABECERA.match(linea)
+        if m:
+            if m.group(1).lower().startswith("tema"):
+                tema = m.group(2).strip()
+            else:
+                titulo = m.group(2).strip()
+            continue
+        limpia = clean_narration(linea)
+        if contar_palabras(limpia):
+            frases += dividir_frases(limpia) or [limpia]
+    return tema, titulo, frases
+
+
+ESQUEMA_META = {
+    "type": "object",
+    "properties": {
+        "frase_clave": {"type": "string"},
+        "titulo": {"type": "string"},
+        "descripcion": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "busquedas": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["frase_clave", "titulo", "descripcion", "hashtags", "busquedas"],
+    "additionalProperties": False,
+}
+
+
+def _prompt_meta(tema: str, frases: list[str]) -> str:
+    claves = ", ".join(f"«{c}»" for c in PALABRAS_CLAVE_SEO[:_PALABRAS_CLAVE_PROMPT])
+    numeradas = "\n".join(f"{n}. {f}" for n, f in enumerate(frases, 1))
+    return f"""El guion de este YouTube Short ya está escrito y NO se cambia. Tema: «{tema}».
+
+GUION:
+{numeradas}
+
+Crea solo los metadatos, en español (salvo 'busquedas'):
+- frase_clave: copia tal cual la búsqueda que mejor encaje: {claves}.
+- titulo: máximo 70 caracteres, empieza con la frase_clave, habla de "tú"; puedes añadir "2026" o "Colombia". \
+Sin promesas de dinero ni lujos. Sin "#Shorts".
+- descripcion: 2 líneas; la frase_clave va en la línea 1 y se repite en la línea 2. Sin hashtags ni nota de afiliados.
+- hashtags: 5 a 8, minúsculas, sin "#".
+- busquedas: exactamente {len(frases)} textos, uno por frase y en el mismo orden: 2 a 4 palabras EN INGLÉS de una \
+toma de stock filmable para esa frase (p. ej. "person using smartphone night"), sin lujos."""
+
+
+def guion_desde_texto(texto: str, usar_llm: bool = True, tema: str = "") -> Guion:
+    """Guion escrito por el autor: el texto se respeta palabra por palabra (voz y subtítulos salen de él).
+    El tema sale de la línea «Tema:», del parámetro ``tema`` o, si no hay, de la primera frase."""
+    tema_linea, titulo, frases = leer_guion(texto)
+    if not frases:
+        raise ValueError("El guion está vacío: escribe una frase por línea.")
+    tema = tema_linea or tema.strip() or recortar_titulo(frases[0].rstrip(".?!¿¡"), 80)
+    meta = None
+    llm = _crear_llm() if usar_llm else None
+    if llm is not None:
+        meta = _pedir_json(llm, SISTEMA_LLM, _prompt_meta(tema, frases), ESQUEMA_META)
+    meta = meta or {}
+    busquedas = [str(b).strip() for b in meta.get("busquedas") or []]
+    if len(busquedas) != len(frases):
+        busquedas = [""] * len(frases)
+    hashtags = [re.sub(r"[^\wáéíóúüñ]", "", str(h).lower().lstrip("#")) for h in meta.get("hashtags") or []]
+    guion = Guion(tema=tema, titulo=titulo or str(meta.get("titulo") or "").strip(),
+                  descripcion=str(meta.get("descripcion") or "").strip(), hashtags=[h for h in hashtags if h][:8],
+                  frases=[Frase(t, b, fija=True) for t, b in zip(frases, busquedas)], fuente="propio",
+                  frase_clave=str(meta.get("frase_clave") or "").strip(), titulo_propio=bool(titulo))
+    guion = completar_busquedas(ajustar_metadatos(guion))
+    log.info("Guion propio: %d frases, %d palabras (el texto no se modifica).", len(guion.frases),
+             contar_palabras(guion.texto))
+    for problema in problemas_del_guion(guion):
+        log.warning("Revisa tu guion (no se cambió): %s", problema)
     return guion
 
 
@@ -423,15 +880,20 @@ def locucion_bajo_60s(guion: Guion, carpeta: Path, voz: str, velocidad: str) -> 
             guion.frases = frases
             return loc
         exceso = loc.duracion / DURACION_MAXIMA - 1
-        if pct < VELOCIDAD_MAXIMA and exceso < 0.25:
+        recortables = any(not f.fija for f in frases[1:-1])
+        if pct < VELOCIDAD_MAXIMA and (exceso < 0.25 or not recortables):
             pct = min(VELOCIDAD_MAXIMA, pct + math.ceil(exceso * 100) + 3)
             log.info("La locución dura %.1f s; subo la velocidad a %+d%%.", loc.duracion, pct)
-        elif len(frases) > 3:
-            quitada = frases.pop(-2)                 # conserva el gancho y la llamada a la acción
+        elif recortables:
+            # Se quita la última frase del desarrollo que no sea obligatoria (gancho, transparencia y cierre
+            # se conservan siempre).
+            idx = max(i for i in range(1, len(frases) - 1) if not frases[i].fija)
+            quitada = frases.pop(idx)
             log.info("La locución dura %.1f s; quito la frase: %s", loc.duracion, quitada.texto)
         else:
             break
-    raise RuntimeError(f"No se pudo dejar la locución por debajo de {DURACION_MAXIMA:.0f} s")
+    raise RuntimeError(f"La locución dura {loc.duracion:.1f} s incluso a {pct:+d}% de velocidad y un Short debe "
+                       f"durar menos de 60 s: acorta el guion (unas {PALABRAS_OBJETIVO[1]} palabras como máximo).")
 
 
 # ------------------------------------------------------------------------------------------ Pixabay
@@ -476,6 +938,39 @@ def buscar_pixabay(consulta: str, clave: str) -> list[Clip]:
     return clips
 
 
+PAUSA_ENTRE_DESCARGAS = 3.0      # segundos: el CDN de Pixabay responde 429 a las ráfagas de descargas
+MAX_FALLOS_SEGUIDOS = 3          # después se reutilizan los clips ya descargados
+
+
+def descargar_clip(url: str, destino: Path) -> Path:
+    """Descarga un clip; ante un 429 espera lo que pida el servidor (Retry-After) o 15-45 s."""
+    import time
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    for intento in range(3):
+        with http().get(url, stream=True, timeout=120) as r:
+            if r.status_code == 429:
+                cabecera = r.headers.get("Retry-After", "")
+                espera = min(90.0, float(cabecera)) if cabecera.replace(".", "", 1).isdigit() \
+                    else 15.0 * (intento + 1)
+                log.info("Pixabay pide esperar (429); reintento en %.0f s…", espera)
+                time.sleep(espera)
+                continue
+            r.raise_for_status()
+            tmp = destino.with_suffix(".part")
+            tamano = 0
+            with open(tmp, "wb") as f:
+                for trozo in r.iter_content(1 << 16):
+                    tamano += len(trozo)
+                    if tamano > 150 * 1024 * 1024:
+                        raise RuntimeError("clip demasiado grande")
+                    f.write(trozo)
+            if tamano == 0:
+                raise RuntimeError("descarga vacía")
+            tmp.replace(destino)
+            return destino
+    raise RuntimeError("HTTP 429: límite de descargas de Pixabay")
+
+
 class BuscadorClips:
     def __init__(self, clave: str, carpeta: Path, consulta_general: str):
         self.clave = clave
@@ -483,6 +978,8 @@ class BuscadorClips:
         self.general = consulta_general
         self.usados: set[str] = set()
         self.autores: set[str] = set()
+        self.descargados: list[Path] = []
+        self.fallos_seguidos = 0
         self._cache: dict[str, list[Clip]] = {}
 
     def _resultados(self, consulta: str) -> list[Clip]:
@@ -490,15 +987,27 @@ class BuscadorClips:
             try:
                 self._cache[consulta] = with_retries(lambda: buscar_pixabay(consulta, self.clave), attempts=2,
                                                      label=f"Pixabay '{consulta}'")
+                if not self._cache[consulta]:
+                    log.info("Pixabay no tiene clips para '%s'.", consulta)
             except Exception as e:
                 log.warning("Búsqueda en Pixabay fallida para '%s': %s", consulta, e)
                 self._cache[consulta] = []
         return self._cache[consulta]
 
+    def _reutilizar(self, n: int) -> Path | None:
+        if not self.descargados:
+            return None
+        clip = self.descargados[n % len(self.descargados)]
+        log.info("Toma %d: reutilizo %s", n, clip.name)
+        return clip
+
     def clip_para(self, consulta: str, n: int) -> Path | None:
         """Descarga un clip no usado para la consulta (o versiones más generales de ella)."""
-        palabras = consulta.split()
-        intentos = [consulta, " ".join(palabras[:2]), palabras[0] if palabras else "", self.general]
+        import time
+        if self.fallos_seguidos >= MAX_FALLOS_SEGUIDOS:
+            return self._reutilizar(n)
+        sing = singular_en(consulta).split()
+        intentos = [consulta, " ".join(sing), " ".join(sing[:2]), sing[0] if sing else "", self.general]
         for q in dict.fromkeys(i for i in intentos if i):
             for clip in self._resultados(q):
                 if clip.id in self.usados:
@@ -506,17 +1015,24 @@ class BuscadorClips:
                 self.usados.add(clip.id)
                 destino = self.carpeta / f"pixabay_{clip.id}.mp4"
                 try:
-                    if not destino.exists():
-                        download(clip.url, destino, timeout=120, max_bytes=150 * 1024 * 1024)
+                    if self.descargados:
+                        time.sleep(PAUSA_ENTRE_DESCARGAS)
+                    descargar_clip(clip.url, destino)
                 except Exception as e:
+                    self.fallos_seguidos += 1
                     log.warning("No se pudo descargar el clip %s: %s", clip.id, e)
+                    if self.fallos_seguidos >= MAX_FALLOS_SEGUIDOS:
+                        log.warning("Demasiadas descargas fallidas seguidas; reutilizo los clips ya descargados.")
+                        return self._reutilizar(n)
                     continue
+                self.fallos_seguidos = 0
+                self.descargados.append(destino)
                 if clip.autor:
                     self.autores.add(clip.autor)
                 log.info("Toma %d: '%s' -> Pixabay %s (%dx%d%s)", n, q, clip.id, clip.ancho, clip.alto,
                          ", vertical" if clip.vertical else ", recortado a 9:16")
                 return destino
-        return None
+        return self._reutilizar(n)
 
 
 # ------------------------------------------------------------------------------------------ subtítulos
@@ -634,15 +1150,19 @@ def planificar_tomas(tramos: list[tuple[float, float]], duracion_total: float) -
 def renderizar(guion: Guion, loc: Locucion, carpeta: Path, salida: Path, clave_pixabay: str) -> set[str]:
     duracion = loc.duracion + 0.35
     tomas = planificar_tomas(loc.tramos, duracion)
-    buscador = BuscadorClips(clave_pixabay, carpeta / "clips", traducir_al_ingles(guion.tema)) \
+    buscador = BuscadorClips(clave_pixabay, carpeta / "clips", consulta_tema(guion.tema)) \
         if clave_pixabay else None
     if not buscador:
         log.warning("PIXABAY_API_KEY no está definida: el fondo será un color liso.")
+    clips = [buscador.clip_para(guion.frases[i].busqueda_en, n + 1) if buscador else None
+             for n, (i, _) in enumerate(tomas)]
+    if buscador and buscador.descargados:              # las tomas sin clip propio reutilizan uno descargado
+        clips = [c or buscador._reutilizar(n + 1) for n, c in enumerate(clips)]
+    elif buscador:
+        log.warning("No se encontró ningún clip en Pixabay: el fondo será un color liso.")
     colores = ["0x1b1f3a", "0x2a1b3a", "0x13303a", "0x3a1b1f"]
-    partes = []
-    for n, (i, dur) in enumerate(tomas):
-        clip = buscador.clip_para(guion.frases[i].busqueda_en, n + 1) if buscador else None
-        partes.append(preparar_toma(clip, dur, carpeta / f"toma_{n:02d}.mp4", colores[i % len(colores)]))
+    partes = [preparar_toma(clip, dur, carpeta / f"toma_{n:02d}.mp4", colores[i % len(colores)])
+              for n, (clip, (i, dur)) in enumerate(zip(clips, tomas))]
     lista = carpeta / "tomas.txt"
     lista.write_text("".join(f"file '{p.name}'\n" for p in partes), encoding="utf-8")
     ffmpeg.run(["-f", "concat", "-safe", "0", "-i", lista.name, "-c", "copy", "fondo.mp4"], cwd=carpeta,
@@ -666,7 +1186,23 @@ def renderizar(guion: Guion, loc: Locucion, carpeta: Path, salida: Path, clave_p
 
 # ------------------------------------------------------------------------------------------ todo junto
 def descripcion_final(guion: Guion, autores: set[str]) -> str:
-    partes = [guion.descripcion.strip()]
+    """Frase clave en las dos primeras líneas, nota de afiliados, créditos y hashtags."""
+    lineas = [ln.strip() for ln in guion.descripcion.strip().splitlines() if ln.strip()]
+    clave = guion.frase_clave
+    if clave:
+        if not lineas or clave.lower() not in lineas[0].lower():
+            titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
+            if clave.lower() in titulo.lower():
+                base = titulo
+            elif clave.lower() in guion.tema.lower():
+                base = guion.tema
+            else:
+                base = f"{_capitalizar(clave)}: {guion.tema}"
+            lineas.insert(0, f"{_capitalizar(base).rstrip('.')}. Explicado sin humo y paso a paso.")
+        if len(lineas) < 2 or clave.lower() not in lineas[1].lower():
+            lineas.insert(1, f"Más sobre {clave[:1].lower() + clave[1:]}: un paso concreto para hacer hoy, "
+                             "con poco tiempo y solo tu celular.")
+    partes = ["\n".join(lineas), NOTA_TRANSPARENCIA]
     if autores:
         partes.append("Videos de fondo: Pixabay (" + ", ".join(sorted(autores)) + ").")
     partes.append("Voz generada con inteligencia artificial.")
@@ -674,14 +1210,33 @@ def descripcion_final(guion: Guion, autores: set[str]) -> str:
     return "\n\n".join(p for p in partes if p)
 
 
+_CONECTORES_FINALES = {"y", "o", "de", "del", "con", "para", "que", "la", "el", "los", "las", "en", "a", "sobre",
+                       "por", "un", "una", "qué", "cuánto", "cómo", "como", "quién", "si", "tu", "tus", "mi", "sin",
+                       "al", "lo", "se", "te"}
+
+
+def recortar_titulo(titulo: str, limite: int) -> str:
+    """Recorta en una palabra completa y sin dejar un conector colgando ("…cuánto cuesta y")."""
+    if len(titulo) <= limite:
+        return titulo
+    palabras = truncate_words(titulo, limite).split()
+    while len(palabras) > 1 and (palabras[-1].lower().strip(",:;") in _CONECTORES_FINALES):
+        palabras.pop()
+    return " ".join(palabras).rstrip(" ,:;-")
+
+
 def titulo_final(guion: Guion) -> str:
     titulo = re.sub(r"\s*#\w+", "", guion.titulo).strip()
-    return truncate_words(titulo, 90) + " #Shorts"
+    return recortar_titulo(titulo, 90) + " #Shorts"
 
 
 def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = VOZ_POR_DEFECTO,
                 velocidad: str = VELOCIDAD_POR_DEFECTO, clave_pixabay: str = "", usar_llm: bool = True,
-                conservar_temporales: bool = False) -> Path:
+                usar_wikipedia: bool = False, conservar_temporales: bool = False,
+                guion_propio: str | None = None) -> Path:
+    guion = guion_desde_texto(guion_propio, usar_llm=usar_llm, tema=tema) if guion_propio else None
+    if guion:
+        tema = guion.tema
     tema = re.sub(r"\s+", " ", tema).strip()
     if not tema:
         raise ValueError("El tema no puede estar vacío.")
@@ -690,8 +1245,11 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
     trabajo = destino / "_temporal"
     trabajo.mkdir(exist_ok=True)
 
-    log.info("1/4 Escribiendo el guion sobre «%s»…", tema)
-    guion = generar_guion(tema, usar_llm=usar_llm)
+    if guion is None:
+        log.info("1/4 Escribiendo el guion sobre «%s»…", tema)
+        guion = generar_guion(tema, usar_llm=usar_llm, usar_wikipedia=usar_wikipedia)
+    else:
+        log.info("1/4 Usando tu guion sobre «%s» (título, descripción y búsquedas listos).", tema)
     log.info("2/4 Grabando la voz (%s)…", voz)
     loc = locucion_bajo_60s(guion, trabajo, voz, velocidad)
     log.info("    Duración de la locución: %.1f s", loc.duracion)
@@ -702,10 +1260,16 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
 
     titulo = titulo_final(guion)
     descripcion = descripcion_final(guion, autores)
+    log.info("Título: %s", titulo)
+    log.info("Guion (%s):\n%s", guion.fuente, "\n".join(f"  {n}. {f.texto}" for n, f in enumerate(guion.frases, 1)))
+    pendientes = problemas_del_guion(guion)
+    if pendientes:
+        log.warning("Reglas sin cumplir: %s", " | ".join(pendientes))
     (destino / "titulo.txt").write_text(titulo + "\n", encoding="utf-8")
     (destino / "descripcion.txt").write_text(descripcion + "\n", encoding="utf-8")
     (destino / "guion.txt").write_text("\n".join(f.texto for f in guion.frases) + "\n", encoding="utf-8")
-    meta = {"tema": tema, "titulo": titulo, "descripcion": descripcion, "hashtags": guion.hashtags,
+    meta = {"tema": tema, "titulo": titulo, "frase_clave": guion.frase_clave, "descripcion": descripcion,
+            "hashtags": guion.hashtags, "reglas_pendientes": pendientes,
             "fuente_guion": guion.fuente, "voz": voz, "duracion_segundos": round(ffmpeg.duration(video), 2),
             "frases": [asdict(f) for f in guion.frases]}
     (destino / "metadatos.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -713,6 +1277,58 @@ def crear_short(tema: str, carpeta_salida: str | Path = "salida", *, voz: str = 
         shutil.rmtree(trabajo, ignore_errors=True)
     log.info("Listo: %s (%.1f s)", video, meta["duracion_segundos"])
     return video
+
+
+# ------------------------------------------------------------------------------------------ temas y YouTube
+def leer_temas(ruta: str | Path) -> list[str]:
+    """Una línea por tema; se ignoran las vacías y las que empiezan con #."""
+    lineas = Path(ruta).read_text(encoding="utf-8").splitlines()
+    return [ln.strip() for ln in lineas if ln.strip() and not ln.strip().startswith("#")]
+
+
+def tema_del_dia(ruta: str | Path, fecha=None) -> str:
+    """Rota por la lista un tema por día (sin guardar estado): al llegar al final vuelve a empezar."""
+    import datetime as dt
+    temas = leer_temas(ruta)
+    if not temas:
+        raise ValueError(f"{ruta} no tiene temas")
+    fecha = fecha or dt.date.today()
+    return temas[fecha.toordinal() % len(temas)]
+
+
+PRIVACIDADES = {"privado": "private", "oculto": "unlisted", "publico": "public", "público": "public"}
+CATEGORIA_EDUCACION = "27"
+
+
+def subir_a_youtube(carpeta: str | Path, privacidad: str = "privado") -> str:
+    """Sube short.mp4 con su título, descripción, etiquetas y subtítulos en español. Devuelve el ID del video.
+
+    Usa el token de `purffle-shorts auth` (YT_TOKEN_FILE). YouTube deja en privado lo que suben los proyectos de
+    Google Cloud no auditados, sea cual sea la privacidad pedida."""
+    from . import youtube
+    from .config import Settings
+    carpeta = Path(carpeta)
+    if privacidad not in PRIVACIDADES:
+        raise ValueError(f"privacidad «{privacidad}»: usa {', '.join(PRIVACIDADES)}")
+    s = Settings.from_env().with_overrides(privacy=PRIVACIDADES[privacidad], synthetic_media=True)
+    meta = json.loads((carpeta / "metadatos.json").read_text(encoding="utf-8"))
+    titulo = (carpeta / "titulo.txt").read_text(encoding="utf-8").strip()
+    descripcion = (carpeta / "descripcion.txt").read_text(encoding="utf-8").strip()
+    etiquetas = [h for h in meta.get("hashtags", []) if h][:15]
+    if meta.get("frase_clave"):
+        etiquetas.insert(0, meta["frase_clave"])
+    cuerpo = youtube.build_body(s, titulo, descripcion, etiquetas, CATEGORIA_EDUCACION, "es")
+    log.info("Subiendo a YouTube como %s: %s", privacidad, titulo)
+    respuesta = youtube.upload(s, carpeta / "short.mp4", cuerpo)
+    video_id = respuesta.get("id", "")
+    if not video_id:
+        raise RuntimeError(f"YouTube no devolvió un ID: {respuesta}")
+    youtube.upload_captions(s, video_id, carpeta / "subtitulos.srt", "es", "Español")
+    meta["youtube_id"] = video_id
+    meta["youtube_url"] = f"https://youtube.com/shorts/{video_id}"
+    (carpeta / "metadatos.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("Subido: %s (revísalo y publícalo desde YouTube Studio)", meta["youtube_url"])
+    return video_id
 
 
 def construir_parser() -> argparse.ArgumentParser:
@@ -725,8 +1341,20 @@ def construir_parser() -> argparse.ArgumentParser:
     p.add_argument("--voz", default=os.getenv("VOZ_ES", VOZ_POR_DEFECTO), help="voz de edge-tts")
     p.add_argument("--velocidad", default=os.getenv("VELOCIDAD_VOZ", VELOCIDAD_POR_DEFECTO),
                    help="velocidad de la voz, p. ej. +8%%")
-    p.add_argument("--sin-llm", action="store_true", help="no usar LLM aunque haya clave (usa Wikipedia)")
+    p.add_argument("--sin-llm", action="store_true", help="no usar LLM aunque haya clave (usa la plantilla)")
+    p.add_argument("--wikipedia", action="store_true",
+                   help="si el LLM falla, usar Wikipedia en español (guion enciclopédico, fuera del nicho)")
     p.add_argument("--conservar-temporales", action="store_true", help="no borrar la carpeta _temporal")
+    p.add_argument("--guion", metavar="ARCHIVO",
+                   help="usar tu propio guion (una frase por línea; opcional «Tema:» y «Título:»); no se modifica")
+    p.add_argument("--guion-texto", metavar="TEXTO",
+                   help="como --guion pero con el texto directamente, frases separadas por «|»")
+    p.add_argument("--temas", metavar="ARCHIVO",
+                   help="sin --tema: usar el tema del día de este archivo (uno por línea, rota cada día)")
+    p.add_argument("--subir", choices=["no", *PRIVACIDADES], default="no",
+                   help="subir a YouTube al terminar (privado por defecto en proyectos no auditados)")
+    p.add_argument("--subir-carpeta", metavar="CARPETA",
+                   help="solo subir a YouTube un Short ya generado (la carpeta con short.mp4)")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -740,21 +1368,51 @@ def main(argv: list[str] | None = None) -> int:
         pass
     args = construir_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
-    tema = args.tema or args.tema_pos
-    if not tema:
+    if args.subir_carpeta:
+        try:
+            subir_a_youtube(args.subir_carpeta, args.subir if args.subir != "no" else "privado")
+        except Exception as e:
+            log.error("Error al subir a YouTube: %s", e)
+            return 1
+        return 0
+    guion_propio = None
+    if args.guion:
+        try:
+            guion_propio = Path(args.guion).read_text(encoding="utf-8")
+        except OSError as e:
+            log.error("No se pudo leer el guion: %s", e)
+            return 2
+    elif args.guion_texto and args.guion_texto.strip():
+        guion_propio = args.guion_texto
+    tema = (args.tema or args.tema_pos or "").strip()
+    if not guion_propio and not tema and args.temas:
+        try:
+            tema = tema_del_dia(args.temas)
+        except (OSError, ValueError) as e:
+            log.error("No se pudo leer el archivo de temas: %s", e)
+            return 2
+        log.info("Tema del día (%s): %s", args.temas, tema)
+    if not tema and not guion_propio:
         print("Indica un tema, por ejemplo:  python -m purffle_shorts.short_es --tema \"los pulpos\"",
               file=sys.stderr)
         return 2
     try:
         video = crear_short(tema, args.salida, voz=args.voz, velocidad=args.velocidad,
                             clave_pixabay=os.getenv("PIXABAY_API_KEY", "").strip(), usar_llm=not args.sin_llm,
-                            conservar_temporales=args.conservar_temporales)
+                            usar_wikipedia=args.wikipedia,
+                            conservar_temporales=args.conservar_temporales, guion_propio=guion_propio)
     except Exception as e:
         log.error("Error al generar el Short: %s", e)
         if args.verbose:
             raise
         return 1
     print(video)
+    if args.subir != "no":
+        try:
+            subir_a_youtube(video.parent, args.subir)
+        except Exception as e:
+            log.error("El Short se generó, pero no se pudo subir a YouTube: %s", e)
+            return 1
     return 0
 
 

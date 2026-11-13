@@ -1,0 +1,28 @@
+# Temas para el Short automático diario (uno por línea; las líneas con # se ignoran).
+# El workflow programado usa un tema por día y, al llegar al final, vuelve a empezar.
+# Orden pensado para el recorrido del cliente: sobre todo etapas 1 a 3 y la Franquicia IA solo de vez en cuando.
+
+# Etapa 1. Despertar: «esto no es para alguien como yo»
+si ganas el mínimo y tienes 1 hora al día, por dónde empezar a generar ingresos extra desde casa
+# Etapa 2. Claridad: «hay mil opciones y no sé cuál elegir»
+el error que te tiene estancado si buscas ingresos extra
+# Etapa 3. Primer resultado: «¿y si conmigo no funciona?»
+una herramienta gratis de IA para dar tu primer paso hoy solo con tu celular
+# Etapa 1
+la dura verdad sobre emprender sin dejar de trabajar
+# Etapa 2
+cómo saber si un curso online es una estafa antes de pagar
+# Etapa 3
+si yo tuviera que conseguir mi primera venta online en 7 días
+# Etapa 4. Constancia
+cómo ser constante en redes si solo tienes 30 minutos al día
+# Etapa 2 (producto: una vez por ciclo)
+la Franquicia IA: qué es, cuánto cuesta y para quién no es
+# Etapa 3
+cómo usar la IA para crear tu primer producto digital desde el celular
+# Etapa 4
+cómo vender en Instagram con pocos seguidores
+# Etapa 1
+emprender sin dinero en Colombia: lo que nadie te dice
+# Etapa 5. Crecimiento
+qué hacer cuando ya tienes tus primeras ventas online

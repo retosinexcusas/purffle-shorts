@@ -45,5 +45,7 @@ desktop.ini
 
 # Misc
 *.txt
+!temas_shorts.txt
+!guiones/*.txt
 !requirements.txt
 !purffle_shorts/web/fonts/OFL.txt

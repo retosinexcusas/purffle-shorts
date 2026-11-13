@@ -93,12 +93,21 @@ El comando `short-es` crea un YouTube Short vertical (1080×1920, 9:16) de **men
 
 | Paso | Herramienta |
 |---|---|
-| Guion, título y descripción | Wikipedia en español (sin clave) o, si existe `GEMINI_API_KEY` / `GROQ_API_KEY`, su nivel gratuito |
+| Guion, título y descripción | Gemini o Groq en su nivel gratuito (`GEMINI_API_KEY` / `GROQ_API_KEY`); sin clave, una plantilla del canal |
 | Voz | edge-tts, por defecto `es-MX-JorgeNeural` |
 | Clips de fondo | API de videos de Pixabay (`PIXABAY_API_KEY`), verticales HD primero; las palabras clave se traducen al inglés internamente para buscar mejor |
 | Subtítulos | Quemados con FFmpeg (libass), sincronizados palabra por palabra con la voz |
 
-Si la locución pasa de 58,5 s, la voz se acelera (hasta +35 %) o se recortan frases del cuerpo, conservando el gancho y el cierre.
+Si la locución pasa de 58,5 s, la voz se acelera (hasta +35 %) o se recortan frases del desarrollo, conservando el gancho, la transparencia comercial y el cierre.
+
+**Cliente ideal y reglas del canal.** El guion se escribe para adultos latinoamericanos (sobre todo de Colombia) de 25 a 45 años con ingresos inestables, poco tiempo y solo su celular, que temen a los gurús de lujos falsos. Las reglas están en `SISTEMA_LLM` y `_prompt_llm` dentro de `purffle_shorts/short_es.py`:
+
+- Tono antihumo y en "tú", sin promesas de riqueza ni lujos, y solo con datos verificados de la región.
+- Estructura de 45 a 55 s: gancho de 0 a 3 s con patrones probados, un obstáculo y un paso accionable, y un llamado a la acción sin presión hacia el enlace del perfil.
+- Si el tema menciona la **Franquicia IA**, el guion explica el precio (97 dólares), la comisión del 50 % (48,50 dólares por venta), que sin ventas no hay ingresos y que el creador gana comisión. Si el modelo lo omite, se añade una frase fija que nunca se recorta.
+- SEO: el título empieza con una búsqueda real de YouTube en Colombia, la frase clave se repite en las dos primeras líneas de la descripción y siempre se añade la nota de enlaces de afiliado.
+
+Si el guion incumple alguna regla, se le pide una corrección al modelo. Lo que siga faltando se registra en `metadatos.json` (`reglas_pendientes`).
 
 **En tu equipo:**
 
@@ -112,9 +121,62 @@ El resultado queda en `salida/<tema>/`: `short.mp4`, `titulo.txt`, `descripcion.
 
 **En GitHub Actions:**
 
-1. En tu repositorio, ve a *Settings → Secrets and variables → Actions* y crea el secreto `PIXABAY_API_KEY` (opcionales: `GEMINI_API_KEY` o `GROQ_API_KEY` para guiones escritos por IA).
+1. En tu repositorio, ve a *Settings → Secrets and variables → Actions* y crea el secreto `PIXABAY_API_KEY`. Para guiones escritos por IA, crea también `GEMINI_API_KEY` y `GROQ_API_KEY` (ambas gratis): si Gemini está saturado, el workflow usa Groq antes de recurrir a la plantilla.
 2. Ve a *Actions → Generar Short en español → Run workflow*, escribe el **tema** y pulsa *Run workflow*.
 3. Al terminar, descarga el video desde la sección **Artifacts** de la ejecución (`short-<número>`). El resumen de la ejecución muestra el título, la descripción y el guion listos para copiar.
+
+### Tu propio guion (el sistema no lo cambia)
+
+Si prefieres escribir el guion tú, el sistema usa tu texto palabra por palabra para la voz y los subtítulos. Lo demás lo hace él: elige los clips, crea el título (si no lo escribes), la descripción con la frase clave y la nota de afiliados, los hashtags y la subida a YouTube.
+
+Formato, igual que en [`guiones/ejemplo.txt`](guiones/ejemplo.txt):
+
+```text
+Tema: ingresos extra desde casa con poco tiempo      ← opcional: ayuda a elegir la frase clave y los clips
+Título: Mi título exacto                             ← opcional: si lo pones, se usa tal cual
+Si tienes una hora al día y solo tu celular, empieza por aquí.
+El error más común es saltar de tutorial en tutorial sin terminar ninguno.
+…
+Si quieres el mapa paso a paso, sin humo ni promesas falsas, revisa el enlace de mi perfil.
+```
+
+- **Una frase por línea**, y como máximo unas 140 palabras: un Short debe durar menos de 60 s. Si se pasa un poco, la voz se acelera (hasta +35 %). Si aun así no cabe, el workflow falla con un mensaje para que lo acortes; nunca borra frases tuyas.
+- El sistema **no añade nada a tu texto**. Si falta algo que piden las reglas del canal (por ejemplo, la transparencia de la Franquicia IA o el llamado a la acción), lo verás como aviso en el log y en `metadatos.json` (`reglas_pendientes`) del artifact.
+
+Cómo usarlo:
+
+- **Desde GitHub (cómodo para editar):** crea un archivo en `guiones/` (*Add file → Create new file*, p. ej. `guiones/mi-video.txt`), y en *Run workflow* escribe esa ruta en **guion_archivo**.
+- **Rápido:** pega el guion en el campo **guion**, con las frases separadas por `|`.
+- **En tu equipo:** `python -m purffle_shorts.short_es --guion guiones/mi-video.txt`.
+- **Para corregir uno de la IA:** copia el `guion.txt` del artifact a `guiones/`, edítalo y genera de nuevo con **guion_archivo**.
+
+### Un Short cada día, automático
+
+El workflow también se ejecuta solo cada día a las 6:17 a. m. de Colombia, con el **tema del día** de [`temas_shorts.txt`](temas_shorts.txt). Hay un tema por línea, la lista rota y al terminar vuelve a empezar. Edita ese archivo para cambiar los temas o su orden: está organizado por las etapas del recorrido de tu cliente. Al lanzarlo a mano, si dejas el tema vacío también se usa el tema del día.
+
+### Subida automática a YouTube (privado)
+
+El video puede subirse a tu canal con título, descripción, etiquetas, subtítulos en español y la marca de contenido sintético. Queda en **privado** para que lo revises y lo publiques desde YouTube Studio. YouTube deja en privado todo lo que suben los proyectos de Google Cloud que no han pasado su auditoría, así que este es el modo realista.
+
+Autorización, una sola vez y desde tu computador:
+
+1. En [Google Cloud Console](https://console.cloud.google.com/), crea un proyecto y activa **YouTube Data API v3**.
+2. En *Google Auth Platform → Audience*, configura la pantalla de consentimiento como *External* y pulsa **Publish app** (estado *In production*). Si la dejas en *Testing*, la autorización caduca a los 7 días.
+3. En *Clients*, crea un cliente OAuth de tipo **Desktop app** y descarga su JSON como `credentials.json` en la carpeta del repositorio.
+4. Ejecuta lo siguiente, inicia sesión con la cuenta de tu canal y acepta los permisos (Google avisará de que la app no está verificada: es tu propia app):
+
+   ```bash
+   pip install -e .
+   UPLOAD_CAPTIONS=true python -m purffle_shorts auth
+   ```
+
+5. Abre el `token.json` que se creó y pega **todo su contenido** en un secreto nuevo del repositorio llamado `YT_TOKEN_JSON`. No subas `token.json` ni `credentials.json` al repositorio.
+
+Uso:
+
+- **A mano:** en *Run workflow*, elige `privado` (u `oculto`) en **subir_youtube**.
+- **En la ejecución diaria:** crea la variable del repositorio `SUBIR_YOUTUBE` con el valor `privado` (*Settings → Secrets and variables → Actions → Variables*).
+- **En tu equipo:** `python -m purffle_shorts.short_es --tema "..." --subir privado`.
 
 ## Convierte videos largos en Shorts
 
