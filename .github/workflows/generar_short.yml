@@ -1,0 +1,115 @@
+name: Generar Short en español
+
+# Se ejecuta a mano desde la pestaña "Actions" → "Generar Short en español" → "Run workflow".
+on:
+  workflow_dispatch:
+    inputs:
+      tema:
+        description: "Tema del Short (en español), p. ej. «los agujeros negros»"
+        required: true
+        type: string
+      voz:
+        description: "Voz de edge-tts"
+        required: false
+        default: "es-MX-JorgeNeural"
+        type: choice
+        options:
+          - es-MX-JorgeNeural
+          - es-MX-DaliaNeural
+          - es-ES-AlvaroNeural
+          - es-ES-ElviraNeural
+          - es-AR-TomasNeural
+          - es-CO-GonzaloNeural
+          - es-US-AlonsoNeural
+      velocidad:
+        description: "Velocidad de la voz (p. ej. +8%, +15%)"
+        required: false
+        default: "+8%"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generar:
+    name: Generar el video
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Los valores del formulario pasan por variables de entorno (nunca se interpolan en el script).
+      TEMA: ${{ inputs.tema }}
+      VOZ_ES: ${{ inputs.voz }}
+      VELOCIDAD_VOZ: ${{ inputs.velocidad }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      # Opcionales (niveles gratuitos): si existen, un LLM escribe el guion; si no, se usa Wikipedia en español.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar FFmpeg y fuentes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          ffmpeg -hide_banner -version | head -n 1
+
+      - name: Instalar dependencias de Python
+        run: pip install -e .
+
+      - name: Comprobar la clave de Pixabay
+        run: |
+          if [ -z "$PIXABAY_API_KEY" ]; then
+            echo "::warning::No existe el secreto PIXABAY_API_KEY: el video tendrá un fondo de color liso. Créalo en Settings → Secrets and variables → Actions."
+          fi
+
+      - name: Generar el Short
+        run: python -m purffle_shorts.short_es --tema "$TEMA" --salida salida
+
+      - name: Resumen
+        if: success()
+        run: |
+          carpeta=$(dirname "$(ls salida/*/short.mp4 | head -n 1)")
+          echo "carpeta=$carpeta" >> "$GITHUB_ENV"
+          {
+            echo "## 🎬 Short generado"
+            echo
+            echo "**Tema:** $TEMA"
+            echo
+            echo "**Duración:** $(python -c "import json,sys; print(json.load(open(sys.argv[1]))['duracion_segundos'])" "$carpeta/metadatos.json") s"
+            echo
+            echo "### Título"
+            echo '```'
+            cat "$carpeta/titulo.txt"
+            echo '```'
+            echo "### Descripción"
+            echo '```'
+            cat "$carpeta/descripcion.txt"
+            echo '```'
+            echo "### Guion"
+            echo '```'
+            cat "$carpeta/guion.txt"
+            echo '```'
+            echo "Descarga el video en **Artifacts**, al final de esta página."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar el video como Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-${{ github.run_number }}
+          path: |
+            ${{ env.carpeta }}/short.mp4
+            ${{ env.carpeta }}/titulo.txt
+            ${{ env.carpeta }}/descripcion.txt
+            ${{ env.carpeta }}/guion.txt
+            ${{ env.carpeta }}/subtitulos.srt
+            ${{ env.carpeta }}/metadatos.json
+          if-no-files-found: error
+          retention-days: 14

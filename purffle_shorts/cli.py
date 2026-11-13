@@ -525,6 +525,9 @@ def build_parser() -> argparse.ArgumentParser:
     mc.add_argument("-v", "--verbose", action="store_true")
     mc.set_defaults(func=cmd_mcp)
 
+    sub.add_parser("short-es", help="Short vertical en español (<60 s): edge-tts + Pixabay + subtítulos; "
+                                    "ver `short-es --help`")
+
     d = sub.add_parser("demo", help="render a sample Short with no API keys")
     _common(d)
     d.set_defaults(func=cmd_demo)
@@ -563,6 +566,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args_in = sys.argv[1:] if argv is None else argv
+    if args_in[:1] == ["short-es"]:   # Short en español: tiene su propio parser (y sus propios mensajes)
+        from .short_es import main as short_es_main
+        return short_es_main(args_in[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
