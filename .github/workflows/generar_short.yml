@@ -44,6 +44,8 @@ jobs:
       # Opcionales (niveles gratuitos): si existen, un LLM escribe el guion; si no, se usa Wikipedia en español.
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      # Opcional: variable del repositorio para cambiar de modelo si el proveedor retira el de por defecto.
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Descargar el repositorio

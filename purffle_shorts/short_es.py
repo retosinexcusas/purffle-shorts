@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import ffmpeg
-from .utils import clean_narration, download, http, slugify, truncate_words, with_retries
+from .utils import clean_narration, http, slugify, truncate_words, with_retries
 
 log = logging.getLogger("purffle.short_es")
 
@@ -140,6 +140,8 @@ def _traducir_diccionario(texto: str) -> str:
 
 
 _CACHE_TRADUCCION: dict[str, str] = {}
+STOPWORDS_EN = set("the a an of and or to in on for with about you your is are was were its it this that "
+                   "these those their they we our my know learned new".split())
 
 
 def traducir_al_ingles(texto: str) -> str:
@@ -163,6 +165,12 @@ def traducir_al_ingles(texto: str) -> str:
     resultado = re.sub(r"\s+", " ", resultado)
     _CACHE_TRADUCCION[texto] = resultado
     return resultado
+
+
+def consulta_tema(tema: str) -> str:
+    """El tema traducido al inglés y sin artículos: «los pulpos» -> "octopuses"."""
+    palabras = [w for w in traducir_al_ingles(tema).split() if w not in STOPWORDS_EN]
+    return " ".join(palabras[:3]) or sin_acentos(tema.lower())
 
 
 # ------------------------------------------------------------------------------------------ guion
@@ -257,25 +265,48 @@ def guion_con_llm(tema: str) -> Guion | None:
                  hashtags=[h for h in hashtags if h][:8], frases=frases, fuente="llm")
 
 
+ARTICULOS_ES = ("el", "la", "los", "las", "un", "una", "unos", "unas", "lo")
+
+
+def _titulos_candidatos(tema: str) -> list[str]:
+    """«los pulpos» -> ["Los pulpos", "Pulpos", "Pulpo"]: Wikipedia titula sus artículos en singular."""
+    palabras = tema.strip().split()
+    while len(palabras) > 1 and palabras[0].lower() in ARTICULOS_ES:
+        palabras = palabras[1:]
+    nucleo = " ".join(palabras)
+    candidatos = [tema.strip(), nucleo]
+    ultima = palabras[-1] if palabras else ""
+    if ultima.lower().endswith("s") and len(ultima) > 3:
+        candidatos.append(" ".join(palabras[:-1] + [ultima[:-1]]))
+    return [c[:1].upper() + c[1:] for c in dict.fromkeys(candidatos) if c]
+
+
+def _paginas_wikipedia(params: dict) -> list[dict]:
+    r = http().get("https://es.wikipedia.org/w/api.php", timeout=20, params={
+        "action": "query", "prop": "extracts|pageprops", "ppprop": "disambiguation", "explaintext": 1,
+        "exchars": 3500, "redirects": 1, "format": "json", "formatversion": 2, **params})
+    r.raise_for_status()
+    paginas = sorted(r.json().get("query", {}).get("pages", []), key=lambda p: p.get("index", 0))
+    return [p for p in paginas if not p.get("missing") and "disambiguation" not in (p.get("pageprops") or {})
+            and len(p.get("extract") or "") > 200]
+
+
 def _wikipedia_extracto(tema: str) -> tuple[str, str] | None:
-    api = "https://es.wikipedia.org/w/api.php"
-    r = http().get(api, timeout=20, params={"action": "query", "list": "search", "srsearch": tema,
-                                            "srlimit": 1, "format": "json"})
-    r.raise_for_status()
-    hits = r.json().get("query", {}).get("search", [])
-    if not hits:
-        return None
-    titulo = hits[0]["title"]
-    r = http().get(api, timeout=20, params={"action": "query", "prop": "extracts", "exintro": 1,
-                                            "explaintext": 1, "redirects": 1, "titles": titulo,
-                                            "format": "json"})
-    r.raise_for_status()
-    paginas = r.json().get("query", {}).get("pages", {})
-    texto = next(iter(paginas.values()), {}).get("extract", "") if paginas else ""
-    return (titulo, texto) if texto else None
+    """Primero busca un artículo con el título exacto (o en singular); si no existe, usa el buscador."""
+    candidatos = _titulos_candidatos(tema)
+    # Del más específico al más literal: «Pulpo» antes que «Los pulpos» (que podría ser un grupo musical).
+    for titulo in reversed(candidatos):
+        for pagina in _paginas_wikipedia({"titles": titulo}):
+            return pagina["title"], pagina["extract"]
+    nucleo = candidatos[1] if len(candidatos) > 1 else candidatos[0]
+    for pagina in _paginas_wikipedia({"generator": "search", "gsrsearch": nucleo, "gsrlimit": 3}):
+        return pagina["title"], pagina["extract"]
+    return None
 
 
 def _limpiar_wikipedia(texto: str) -> str:
+    texto = re.split(r"\n=+\s*(?:Referencias|Véase también|Notas|Bibliografía|Enlaces externos)", texto)[0]
+    texto = re.sub(r"^=+.*?=+\s*$", " ", texto, flags=re.M)     # títulos de sección
     texto = re.sub(r"\([^()]*\)", "", texto)          # pronunciaciones, fechas entre paréntesis
     texto = re.sub(r"\[[^\]]*\]", "", texto)
     texto = re.sub(r"\s+([,.;:])", r"\1", texto)
@@ -342,13 +373,20 @@ def generar_guion(tema: str, usar_llm: bool = True) -> Guion:
     guion = (guion_con_llm(tema) if usar_llm else None) or guion_con_wikipedia(tema) or guion_plantilla(tema)
     log.info("Guion generado (%s): %d frases, %d palabras.", guion.fuente, len(guion.frases),
              contar_palabras(guion.texto))
-    tema_en = traducir_al_ingles(tema)
-    for frase in guion.frases:
+    tema_en = consulta_tema(tema)
+    ultima = len(guion.frases) - 1
+    for i, frase in enumerate(guion.frases):
         busqueda = frase.busqueda_en.strip()
-        if not busqueda or re.search(r"[áéíóúñ¿¡]", busqueda, re.I):   # vacía o aún en español
-            clave = " ".join(palabras_clave(frase.texto, 2))
-            busqueda = traducir_al_ingles(clave) if clave else ""
-        frase.busqueda_en = busqueda or tema_en
+        if busqueda and not re.search(r"[áéíóúñ¿¡]", busqueda, re.I):
+            continue                                    # el LLM ya dio una buena consulta en inglés
+        frase.busqueda_en = tema_en
+        if 0 < i < ultima:                              # el gancho y el cierre muestran el tema
+            clave = next((p for p in palabras_clave(frase.texto, 3)
+                          if sin_acentos(p) not in sin_acentos(tema.lower())), "")
+            extra = traducir_al_ingles(clave) if clave else ""
+            extra = " ".join(w for w in extra.split() if w not in STOPWORDS_EN and w not in tema_en.split())
+            if extra:
+                frase.busqueda_en = f"{tema_en} {extra.split()[0]}"
     return guion
 
 
@@ -476,6 +514,39 @@ def buscar_pixabay(consulta: str, clave: str) -> list[Clip]:
     return clips
 
 
+PAUSA_ENTRE_DESCARGAS = 3.0      # segundos: el CDN de Pixabay responde 429 a las ráfagas de descargas
+MAX_FALLOS_SEGUIDOS = 3          # después se reutilizan los clips ya descargados
+
+
+def descargar_clip(url: str, destino: Path) -> Path:
+    """Descarga un clip; ante un 429 espera lo que pida el servidor (Retry-After) o 15-45 s."""
+    import time
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    for intento in range(3):
+        with http().get(url, stream=True, timeout=120) as r:
+            if r.status_code == 429:
+                cabecera = r.headers.get("Retry-After", "")
+                espera = min(90.0, float(cabecera)) if cabecera.replace(".", "", 1).isdigit() \
+                    else 15.0 * (intento + 1)
+                log.info("Pixabay pide esperar (429); reintento en %.0f s…", espera)
+                time.sleep(espera)
+                continue
+            r.raise_for_status()
+            tmp = destino.with_suffix(".part")
+            tamano = 0
+            with open(tmp, "wb") as f:
+                for trozo in r.iter_content(1 << 16):
+                    tamano += len(trozo)
+                    if tamano > 150 * 1024 * 1024:
+                        raise RuntimeError("clip demasiado grande")
+                    f.write(trozo)
+            if tamano == 0:
+                raise RuntimeError("descarga vacía")
+            tmp.replace(destino)
+            return destino
+    raise RuntimeError("HTTP 429: límite de descargas de Pixabay")
+
+
 class BuscadorClips:
     def __init__(self, clave: str, carpeta: Path, consulta_general: str):
         self.clave = clave
@@ -483,6 +554,8 @@ class BuscadorClips:
         self.general = consulta_general
         self.usados: set[str] = set()
         self.autores: set[str] = set()
+        self.descargados: list[Path] = []
+        self.fallos_seguidos = 0
         self._cache: dict[str, list[Clip]] = {}
 
     def _resultados(self, consulta: str) -> list[Clip]:
@@ -495,8 +568,18 @@ class BuscadorClips:
                 self._cache[consulta] = []
         return self._cache[consulta]
 
+    def _reutilizar(self, n: int) -> Path | None:
+        if not self.descargados:
+            return None
+        clip = self.descargados[n % len(self.descargados)]
+        log.info("Toma %d: reutilizo %s", n, clip.name)
+        return clip
+
     def clip_para(self, consulta: str, n: int) -> Path | None:
         """Descarga un clip no usado para la consulta (o versiones más generales de ella)."""
+        import time
+        if self.fallos_seguidos >= MAX_FALLOS_SEGUIDOS:
+            return self._reutilizar(n)
         palabras = consulta.split()
         intentos = [consulta, " ".join(palabras[:2]), palabras[0] if palabras else "", self.general]
         for q in dict.fromkeys(i for i in intentos if i):
@@ -506,17 +589,24 @@ class BuscadorClips:
                 self.usados.add(clip.id)
                 destino = self.carpeta / f"pixabay_{clip.id}.mp4"
                 try:
-                    if not destino.exists():
-                        download(clip.url, destino, timeout=120, max_bytes=150 * 1024 * 1024)
+                    if self.descargados:
+                        time.sleep(PAUSA_ENTRE_DESCARGAS)
+                    descargar_clip(clip.url, destino)
                 except Exception as e:
+                    self.fallos_seguidos += 1
                     log.warning("No se pudo descargar el clip %s: %s", clip.id, e)
+                    if self.fallos_seguidos >= MAX_FALLOS_SEGUIDOS:
+                        log.warning("Demasiadas descargas fallidas seguidas; reutilizo los clips ya descargados.")
+                        return self._reutilizar(n)
                     continue
+                self.fallos_seguidos = 0
+                self.descargados.append(destino)
                 if clip.autor:
                     self.autores.add(clip.autor)
                 log.info("Toma %d: '%s' -> Pixabay %s (%dx%d%s)", n, q, clip.id, clip.ancho, clip.alto,
                          ", vertical" if clip.vertical else ", recortado a 9:16")
                 return destino
-        return None
+        return self._reutilizar(n)
 
 
 # ------------------------------------------------------------------------------------------ subtítulos

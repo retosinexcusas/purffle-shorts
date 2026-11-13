@@ -9,6 +9,8 @@ import pytest
 from purffle_shorts import ffmpeg, short_es
 from tests.conftest import needs_ffmpeg
 
+_WIKIPEDIA_REAL = short_es._wikipedia_extracto
+
 
 @pytest.fixture(autouse=True)
 def _sin_red(monkeypatch):
@@ -152,3 +154,99 @@ def test_cli_delega_en_short_es(monkeypatch):
 
 def test_edge_frase_firma():
     assert asyncio.iscoroutinefunction(short_es._edge_frase)
+
+
+def test_titulos_candidatos_prefiere_el_singular():
+    assert short_es._titulos_candidatos("los pulpos") == ["Los pulpos", "Pulpos", "Pulpo"]
+    assert short_es._titulos_candidatos("Marte") == ["Marte"]
+
+
+def test_wikipedia_prueba_primero_el_singular(monkeypatch):
+    pedidos = []
+
+    def paginas(params):
+        pedidos.append(params)
+        return [{"title": "Octopoda", "extract": "Los pulpos son moluscos."}] if params.get("titles") == "Pulpo" else []
+    monkeypatch.setattr(short_es, "_paginas_wikipedia", paginas)
+    assert _WIKIPEDIA_REAL("los pulpos") == ("Octopoda", "Los pulpos son moluscos.")
+    assert pedidos == [{"titles": "Pulpo"}]           # «Los pulpos» (¿un grupo musical?) ni se consulta
+
+
+def test_wikipedia_usa_el_buscador_si_no_hay_titulo(monkeypatch):
+    def paginas(params):
+        return [{"title": "Agujero negro", "extract": "..."}] if "gsrsearch" in params else []
+    monkeypatch.setattr(short_es, "_paginas_wikipedia", paginas)
+    assert _WIKIPEDIA_REAL("los agujeros negros")[0] == "Agujero negro"
+
+
+def test_limpiar_wikipedia_quita_secciones():
+    assert short_es._limpiar_wikipedia("Texto.\n== Historia ==\nMás texto (nota).\n== Referencias ==\nx") == \
+        "Texto. Más texto."
+
+
+def test_consultas_llevan_el_tema_en_ingles(monkeypatch):
+    traducciones = {"los pulpos": "the octopuses", "corazones": "hearts", "brazos": "arms"}
+    monkeypatch.setattr(short_es, "_traducir_google", lambda t: traducciones.get(t, t))
+    g = short_es.Guion("los pulpos", "t", "d", [], [
+        short_es.Frase("¿Sabías esto de los pulpos?"),
+        short_es.Frase("Tienen tres corazones."),
+        short_es.Frase("Y ocho brazos."),
+        short_es.Frase("Sígueme para más.")])
+    monkeypatch.setattr(short_es, "guion_con_wikipedia", lambda tema: g)
+    out = short_es.generar_guion("los pulpos", usar_llm=False)
+    assert [f.busqueda_en for f in out.frases] == ["octopuses", "octopuses hearts", "octopuses arms", "octopuses"]
+
+
+def test_descargas_fallidas_reutilizan_clips(tmp_path, monkeypatch):
+    clips = [short_es.Clip(str(i), f"https://x/{i}.mp4", 1080, 1920, 10, "ana") for i in range(10)]
+    monkeypatch.setattr(short_es, "buscar_pixabay", lambda q, k: clips)
+    monkeypatch.setattr(short_es, "PAUSA_ENTRE_DESCARGAS", 0)
+    llamadas = []
+
+    def descargar(url, destino):
+        llamadas.append(url)
+        if len(llamadas) > 1:
+            raise RuntimeError("HTTP 429")
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(b"video")
+        return destino
+    monkeypatch.setattr(short_es, "descargar_clip", descargar)
+    b = short_es.BuscadorClips("k", tmp_path, "octopus")
+    primero = b.clip_para("octopus", 1)
+    assert primero and primero.exists()
+    assert b.clip_para("octopus", 2) == primero          # 3 fallos seguidos -> reutiliza
+    assert len(llamadas) == 1 + short_es.MAX_FALLOS_SEGUIDOS
+    assert b.clip_para("octopus", 3) == primero          # ya no intenta descargar más
+    assert len(llamadas) == 1 + short_es.MAX_FALLOS_SEGUIDOS
+
+
+def test_descargar_clip_respeta_retry_after(tmp_path, monkeypatch):
+    import time
+    esperas = []
+    monkeypatch.setattr(time, "sleep", esperas.append)
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+            self.headers = {"Retry-After": "7"} if code == 429 else {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, n):
+            return [b"abc"]
+
+    respuestas = [Resp(429), Resp(200)]
+
+    class Sesion:
+        def get(self, url, **kw):
+            return respuestas.pop(0)
+    monkeypatch.setattr(short_es, "http", lambda: Sesion())
+    destino = short_es.descargar_clip("https://x/1.mp4", tmp_path / "c.mp4")
+    assert destino.read_bytes() == b"abc" and esperas == [7.0]

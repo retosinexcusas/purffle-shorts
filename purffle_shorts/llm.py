@@ -47,7 +47,7 @@ PRESETS: dict[str, Preset] = {p.name: p for p in [
     Preset("anthropic", "Anthropic (Claude)", "", ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
            "claude-opus-5-5", kind="anthropic"),
     Preset("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
-           ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "gemini-2.5-flash", schema_mode=True),
+           ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "gemini-3.8-flash", schema_mode=True),
     Preset("groq", "Groq (Llama, fast)", "https://api.groq.com/openai/v1", ("GROQ_API_KEY",),
            "llama-3.3-70b-versatile"),
     Preset("openrouter", "OpenRouter (hundreds of models)", "https://openrouter.ai/api/v1",
